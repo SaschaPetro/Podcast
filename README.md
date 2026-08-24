@@ -8,7 +8,7 @@ Dieses System erzeugt automatisiert einen deutschsprachigen KI-News-Podcast für
 
 ```mermaid
 flowchart TD
-    RSS["RSS-Feeds<br/>(THE DECODER, T3N, HEISE)"] -->|rss_einlesen.py| ROH[("rohnachrichten")]
+    RSS["RSS-Feeds<br/>(THE DECODER, T3N, HEISE,<br/>OPENAI, GOLEM, NETZPOLITIK,<br/>GRÜNDERSZENE, HANDELSBLATT)"] -->|rss_einlesen.py| ROH[("rohnachrichten")]
 
     ROH --> RA1["Recherche-Agent<br/>Produkte & Tools"]
     ROH --> RA2["Recherche-Agent<br/>Regulierung & Recht"]

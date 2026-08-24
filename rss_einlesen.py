@@ -20,6 +20,11 @@ FEEDS = [
     ("THE DECODER", "https://the-decoder.de/feed/"),
     ("T3N", "https://t3n.de/rss.xml"),
     ("HEISE", "https://www.heise.de/rss/heise-atom.xml"),
+    ("OPENAI", "https://openai.com/blog/rss.xml"),
+    ("GOLEM", "https://www.golem.de/rss.php?feed=RSS2.0"),
+    ("NETZPOLITIK", "https://netzpolitik.org/feed/"),
+    ("GRÜNDERSZENE", "https://www.gruenderszene.de/feed"),
+    ("HANDELSBLATT", "https://www.handelsblatt.com/contentexport/feed/technologie"),
 ]
 
 

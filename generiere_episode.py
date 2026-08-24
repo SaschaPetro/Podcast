@@ -15,6 +15,7 @@ Eine unabhängig aufrufbare Funktion:
    nicht in der nächsten Episode erneut auftauchen.
 """
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -84,7 +85,7 @@ def hole_offene_themen(supabase) -> list[dict]:
 def baue_themen_block(themen: list[dict]) -> str:
     bloecke = []
     for t in themen:
-        block = f'Thema: {t["titel"]}\nStand: {t["zusammenfassung"] or ""}'
+        block = f'[ID: {t["id"]}] Thema: {t["titel"]}\nStand: {t["zusammenfassung"] or ""}'
         if t["updates"]:
             block += "\nNeue Fakten seitdem:\n" + "\n".join(f"- {u}" for u in t["updates"])
         bloecke.append(block)
@@ -98,8 +99,13 @@ def baue_manuskript_prompt(persona: str, themen_block: str, zusatz_anweisung: st
         "soll sich in den ersten 15 Sekunden gepackt fühlen, nicht erst nach einer "
         "Anmoderation.\n\n"
         "Du schreibst das Manuskript für die nächste Folge deines Podcasts. Hier "
-        "sind die Themen für diese Episode:\n\n"
+        "sind die aktuell akzeptierten Themen (die [ID: ...]-Markierung ist nur "
+        "für dich zur Zuordnung, NICHT vorlesen):\n\n"
         f"{themen_block}\n\n"
+        "THEMENAUSWAHL:\n\n"
+        "- Wähle daraus die 5-6 wichtigsten Themen für diese Episode aus. Wenn "
+        "mehr als 6 Themen aufgeführt sind, lass die übrigen bewusst weg - nimm "
+        "die, die für den Hörer gerade am relevantesten oder aktuellsten sind.\n\n"
         "AUFBAU DER EPISODE:\n\n"
         "- Kein \"Hallo zusammen\" oder \"hier sind die Meldungen des Tages\" als "
         "Einstieg. Steig direkt beim ersten Thema mit einem Hook ein: eine "
@@ -116,23 +122,46 @@ def baue_manuskript_prompt(persona: str, themen_block: str, zusatz_anweisung: st
         "Handlungsschritt.\n\n"
         "- Schließe jeden Themenblock mit einer kurzen, direkten Frage an den "
         "Hörer ab, die zum Nachdenken oder Handeln anregt.\n\n"
+        "- Wiederhole NICHT bei jedem Thema dasselbe Muster. Variiere den Aufbau: "
+        "manche Abschnitte enden mit einer direkten Handlungsaufforderung statt "
+        "einer Frage an den Hörer, manche starten mit einer überraschenden Zahl "
+        "statt einem Szenario. Die Hörer sollen nicht vorhersehen können, wie der "
+        "nächste Abschnitt endet.\n\n"
         "- Zwischen den Themen: echte Übergänge, keine reine Aneinanderreihung. "
         "Nutze inhaltliche Brücken (\"Und weil wir gerade bei Sicherheit sind...\") "
         "oder Kontraste (\"Ganz anders sieht es bei...\").\n\n"
         "- Kurzer, ebenso packender Abschluss am Ende - keine Standard-"
         "Verabschiedungsfloskel.\n\n"
         "Gib NUR den reinen Manuskripttext zurück, ohne Regieanweisungen, "
-        "Kapitelüberschriften oder Markdown-Formatierung."
+        "Kapitelüberschriften oder Markdown-Formatierung. Hänge danach als GANZ "
+        "LETZTE Zeile exakt in diesem Format an (kein zusätzlicher Text, keine "
+        "Erklärung):\n"
+        "VERWENDETE_THEMEN_IDS: <id1>,<id2>,...\n"
+        "- die IDs (aus den [ID: ...]-Markierungen oben) der Themen, die du "
+        "tatsächlich verwendet hast."
     )
     if zusatz_anweisung:
         prompt += f"\n\n--- Zusätzliche Anweisung für diesen Durchlauf ---\n{zusatz_anweisung}"
     return prompt
 
 
-def erstelle_manuskript(chat_model, persona: str, themen_block: str, zusatz_anweisung: str | None) -> str:
+_IDS_ZEILE = re.compile(r"^VERWENDETE_THEMEN_IDS:\s*(.*)$", re.MULTILINE)
+
+
+def erstelle_manuskript(
+    chat_model, persona: str, themen_block: str, zusatz_anweisung: str | None
+) -> tuple[str, list[str]]:
     prompt = baue_manuskript_prompt(persona, themen_block, zusatz_anweisung)
-    antwort = chat_model.generate_content(prompt)
-    return antwort.text.strip()
+    antwort = chat_model.generate_content(prompt).text.strip()
+
+    treffer = _IDS_ZEILE.search(antwort)
+    if not treffer:
+        print("WARNUNG: Keine VERWENDETE_THEMEN_IDS-Zeile in der Antwort gefunden.")
+        return antwort, []
+
+    manuskripttext = antwort[: treffer.start()].strip()
+    verwendete_ids = [teil.strip() for teil in treffer.group(1).split(",") if teil.strip()]
+    return manuskripttext, verwendete_ids
 
 
 def erstelle_episode(zusatz_anweisung: str | None = None) -> dict | None:
@@ -153,7 +182,9 @@ def erstelle_episode(zusatz_anweisung: str | None = None) -> dict | None:
 
     themen_block = baue_themen_block(themen)
     print("Erzeuge Manuskript...")
-    manuskripttext = erstelle_manuskript(chat_model, persona, themen_block, zusatz_anweisung)
+    manuskripttext, verwendete_ids = erstelle_manuskript(
+        chat_model, persona, themen_block, zusatz_anweisung
+    )
     print(f"-> Manuskript erzeugt ({len(manuskripttext)} Zeichen).\n")
 
     jetzt = datetime.now(timezone.utc).isoformat()
@@ -165,9 +196,19 @@ def erstelle_episode(zusatz_anweisung: str | None = None) -> dict | None:
     )
     print(f'-> Episode gespeichert (id={episode["id"]}).')
 
-    thema_ids = [t["id"] for t in themen]
-    supabase.table("themen").update({"status": "gesendet"}).in_("id", thema_ids).execute()
-    print(f"-> {len(thema_ids)} Thema/Themen als 'gesendet' markiert.\n")
+    bekannte_ids = {t["id"] for t in themen}
+    gueltige_ids = [tid for tid in verwendete_ids if tid in bekannte_ids]
+    if not gueltige_ids:
+        print(
+            "WARNUNG: Konnte die verwendeten Themen nicht sicher bestimmen - "
+            "es wurde KEIN Thema als 'gesendet' markiert. Bitte manuell prüfen "
+            "und Status ggf. per Hand setzen.\n"
+        )
+    else:
+        supabase.table("themen").update({"status": "gesendet"}).in_(
+            "id", gueltige_ids
+        ).execute()
+        print(f"-> {len(gueltige_ids)} Thema/Themen als 'gesendet' markiert.\n")
 
     return episode
 

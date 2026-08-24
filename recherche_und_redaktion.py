@@ -42,6 +42,8 @@ load_dotenv()
 
 CHAT_MODEL = "gemini-3.6-flash"
 MAX_ALTER_TAGE = 3
+MAX_ZURUECKSTELLUNG_TAGE = 3
+GUELTIGE_STATUS = {"akzeptiert", "abgelehnt", "zurueckgestellt"}
 
 
 def hole_supabase_client():
@@ -169,10 +171,45 @@ def hole_offene_vorschlaege(supabase) -> list[dict]:
     if not vorschlaege:
         return []
 
-    entschieden = supabase.table("redaktion_entscheidungen").select("vorschlag_id").execute().data
-    entschiedene_ids = {e["vorschlag_id"] for e in entschieden}
+    entscheidungen = (
+        supabase.table("redaktion_entscheidungen")
+        .select("id, vorschlag_id, status, erste_zurueckstellung_am")
+        .execute()
+        .data
+    )
+    entscheidung_nach_vorschlag = {e["vorschlag_id"]: e for e in entscheidungen}
 
-    offene = [v for v in vorschlaege if v["id"] not in entschiedene_ids]
+    jetzt = datetime.now(timezone.utc)
+    offene = []
+    for v in vorschlaege:
+        bisherige = entscheidung_nach_vorschlag.get(v["id"])
+        if bisherige is None:
+            offene.append(
+                {
+                    **v,
+                    "entscheidung_id": None,
+                    "zurueckgestellt_bisher": False,
+                    "erste_zurueckstellung_am": None,
+                    "frist_abgelaufen": False,
+                }
+            )
+        elif bisherige["status"] == "zurueckgestellt":
+            erste_am = bisherige.get("erste_zurueckstellung_am")
+            frist_abgelaufen = False
+            if erste_am:
+                seit = jetzt - datetime.fromisoformat(erste_am.replace("Z", "+00:00"))
+                frist_abgelaufen = seit > timedelta(days=MAX_ZURUECKSTELLUNG_TAGE)
+            offene.append(
+                {
+                    **v,
+                    "entscheidung_id": bisherige["id"],
+                    "zurueckgestellt_bisher": True,
+                    "erste_zurueckstellung_am": erste_am,
+                    "frist_abgelaufen": frist_abgelaufen,
+                }
+            )
+        # status akzeptiert/abgelehnt -> endgueltig entschieden, bleibt draussen
+
     if not offene:
         return []
 
@@ -198,28 +235,52 @@ def hole_offene_vorschlaege(supabase) -> list[dict]:
                 "agent_name": agent_namen.get(v["agent_id"], "Unbekannt"),
                 "rohnachricht_titel": rohnachricht["titel"] if rohnachricht else "(Rohnachricht gelöscht)",
                 "rohnachricht_text": rohnachricht["text"] if rohnachricht else "",
+                "entscheidung_id": v["entscheidung_id"],
+                "zurueckgestellt_bisher": v["zurueckgestellt_bisher"],
+                "erste_zurueckstellung_am": v["erste_zurueckstellung_am"],
+                "frist_abgelaufen": v["frist_abgelaufen"],
             }
         )
     return ergebnis
 
 
-def entscheide_ueber_vorschlaege(chat_model, systemkontext: str, vorschlaege: list[dict]) -> list[dict]:
-    vorschlaege_block = "\n\n".join(
+def baue_vorschlag_block(i: int, v: dict) -> str:
+    hinweise = []
+    if v["zurueckgestellt_bisher"]:
+        hinweise.append(
+            "HINWEIS: Dieser Vorschlag wurde bereits zurückgestellt, prüfe besonders "
+            "sorgfältig, ob er jetzt aufgenommen werden sollte."
+        )
+        if v["frist_abgelaufen"]:
+            hinweise.append(
+                f"WICHTIG: Seit der ersten Zurückstellung sind mehr als "
+                f"{MAX_ZURUECKSTELLUNG_TAGE} Tage vergangen. Dieser Vorschlag darf NICHT "
+                "nochmal zurückgestellt werden - entscheide dich für 'akzeptiert' oder 'abgelehnt'."
+            )
+    hinweis_text = ("\n" + "\n".join(hinweise)) if hinweise else ""
+    return (
         f'[{i}] Vorschlag von Recherche-Agent "{v["agent_name"]}":\n'
         f'Titel: {v["rohnachricht_titel"]}\n'
         f'Begründung des Recherche-Agenten: {v["begruendung"]}\n'
-        f'Text: {v["rohnachricht_text"]}'
-        for i, v in enumerate(vorschlaege)
+        f'Text: {v["rohnachricht_text"]}{hinweis_text}'
     )
+
+
+def entscheide_ueber_vorschlaege(chat_model, systemkontext: str, vorschlaege: list[dict]) -> list[dict]:
+    vorschlaege_block = "\n\n".join(baue_vorschlag_block(i, v) for i, v in enumerate(vorschlaege))
 
     prompt = (
         f"{systemkontext}\n\n"
         "Hier sind alle offenen Themen-Vorschläge der Recherche-Agenten für die nächste Episode. "
         "Wähle die 4-6 wichtigsten aus. Gib für JEDEN Vorschlag eine Entscheidung ab "
         "(auch für die nicht ausgewählten), jeweils mit Begründung.\n\n"
+        "Für jeden Vorschlag gibt es drei mögliche Status:\n"
+        "- 'akzeptiert': kommt in die Themen-Pipeline\n"
+        "- 'zurueckgestellt': gut und relevant, aber heute kein Platz - wird morgen erneut geprüft\n"
+        "- 'abgelehnt': nicht relevant genug, endgültig raus\n\n"
         f"{vorschlaege_block}\n\n"
         "Antworte NUR mit JSON in diesem Format: "
-        '[{"index": int, "akzeptiert": bool, "begruendung": string}]'
+        '[{"index": int, "status": "akzeptiert" | "abgelehnt" | "zurueckgestellt", "begruendung": string}]'
     )
 
     antwort = chat_model.generate_content(
@@ -234,12 +295,28 @@ def entscheide_ueber_vorschlaege(chat_model, systemkontext: str, vorschlaege: li
         if index is None or not (0 <= index < len(vorschlaege)):
             print(f"-> Warnung: Gemini-Entscheidung mit ungültigem Index {index} wird übersprungen.")
             continue
+        vorschlag = vorschlaege[index]
+        status = eintrag.get("status")
+        if status not in GUELTIGE_STATUS:
+            print(
+                f'-> Warnung: ungültiger Status "{status}" für "{vorschlag["rohnachricht_titel"]}", '
+                "wird übersprungen."
+            )
+            continue
+        if status == "zurueckgestellt" and vorschlag["frist_abgelaufen"]:
+            print(
+                f'-> Warnung: "{vorschlag["rohnachricht_titel"]}" ist seit über '
+                f'{MAX_ZURUECKSTELLUNG_TAGE} Tagen zurückgestellt, erzwinge "abgelehnt".'
+            )
+            status = "abgelehnt"
         ergebnis.append(
             {
-                "vorschlag_id": vorschlaege[index]["id"],
-                "rohnachricht_titel": vorschlaege[index]["rohnachricht_titel"],
-                "akzeptiert": bool(eintrag.get("akzeptiert")),
+                "vorschlag_id": vorschlag["id"],
+                "entscheidung_id": vorschlag["entscheidung_id"],
+                "rohnachricht_titel": vorschlag["rohnachricht_titel"],
+                "status": status,
                 "begruendung": eintrag.get("begruendung", ""),
+                "erste_zurueckstellung_am_bisher": vorschlag["erste_zurueckstellung_am"],
             }
         )
     return ergebnis
@@ -262,22 +339,34 @@ def fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent: dict, zusatz_
         return 0
 
     jetzt = datetime.now(timezone.utc).isoformat()
-    akzeptiert_anzahl = 0
+    zaehler = {"akzeptiert": 0, "abgelehnt": 0, "zurueckgestellt": 0}
     for entscheidung in entscheidungen:
-        supabase.table("redaktion_entscheidungen").insert(
-            {
-                "vorschlag_id": entscheidung["vorschlag_id"],
-                "akzeptiert": entscheidung["akzeptiert"],
-                "begruendung": entscheidung["begruendung"],
-                "entschieden_am": jetzt,
-            }
-        ).execute()
-        status = "akzeptiert" if entscheidung["akzeptiert"] else "abgelehnt"
-        print(f'-> {status}: "{entscheidung["rohnachricht_titel"]}"')
-        if entscheidung["akzeptiert"]:
-            akzeptiert_anzahl += 1
+        status = entscheidung["status"]
+        daten = {
+            "vorschlag_id": entscheidung["vorschlag_id"],
+            "status": status,
+            "akzeptiert": status == "akzeptiert",
+            "begruendung": entscheidung["begruendung"],
+            "entschieden_am": jetzt,
+        }
+        if status == "zurueckgestellt":
+            daten["erste_zurueckstellung_am"] = entscheidung["erste_zurueckstellung_am_bisher"] or jetzt
 
-    print(f"-> {len(entscheidungen)} Entscheidungen gespeichert ({akzeptiert_anzahl} akzeptiert).\n")
+        if entscheidung["entscheidung_id"]:
+            supabase.table("redaktion_entscheidungen").update(daten).eq(
+                "id", entscheidung["entscheidung_id"]
+            ).execute()
+        else:
+            supabase.table("redaktion_entscheidungen").insert(daten).execute()
+
+        print(f'-> {status}: "{entscheidung["rohnachricht_titel"]}"')
+        zaehler[status] += 1
+
+    print(
+        f"-> {len(entscheidungen)} Entscheidungen gespeichert "
+        f"({zaehler['akzeptiert']} akzeptiert, {zaehler['zurueckgestellt']} zurückgestellt, "
+        f"{zaehler['abgelehnt']} abgelehnt).\n"
+    )
     return len(entscheidungen)
 
 

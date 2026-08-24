@@ -1,14 +1,18 @@
 """Erzeugt aus den aktuell offenen Themen ein Podcast-Manuskript und legt eine
 neue Episode in "episoden" an.
 
+Die Moderator-Persona (Ton, Zielgruppe, Stil) wird aus "agenten_konfiguration"
+geholt (rolle="moderator") und bildet die Hauptgrundlage für den
+Gemini-Prompt.
+
 Eine unabhängig aufrufbare Funktion:
 
 1. erstelle_episode(zusatz_anweisung=None)
-   Holt alle Themen mit Status "neu" oder "in Verfolgung" samt ihren bisherigen
-   Updates aus "themen_updates", lässt Gemini daraus ein Manuskript im
-   peppigen, energiegeladenen Erzählstil schreiben, speichert es in "episoden"
-   und markiert die verwendeten Themen als "gesendet", damit sie nicht in der
-   nächsten Episode erneut auftauchen.
+   Holt die aktive Moderator-Persona sowie alle Themen mit Status "neu" oder
+   "in Verfolgung" samt ihren bisherigen Updates aus "themen_updates", lässt
+   Gemini daraus im Ton dieser Persona ein Manuskript schreiben, speichert es
+   in "episoden" und markiert die verwendeten Themen als "gesendet", damit sie
+   nicht in der nächsten Episode erneut auftauchen.
 """
 import os
 import sys
@@ -31,6 +35,23 @@ def hole_supabase_client():
 def hole_chat_model():
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
     return genai.GenerativeModel(CHAT_MODEL)
+
+
+def hole_moderator_persona(supabase) -> str:
+    treffer = (
+        supabase.table("agenten_konfiguration")
+        .select("fokus_beschreibung")
+        .eq("rolle", "moderator")
+        .eq("aktiv", True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not treffer:
+        raise RuntimeError(
+            'Kein aktiver Agent mit rolle="moderator" in agenten_konfiguration gefunden.'
+        )
+    return treffer[0]["fokus_beschreibung"]
 
 
 def hole_offene_themen(supabase) -> list[dict]:
@@ -70,20 +91,15 @@ def baue_themen_block(themen: list[dict]) -> str:
     return "\n\n".join(bloecke)
 
 
-def baue_manuskript_prompt(themen_block: str, zusatz_anweisung: str | None) -> str:
+def baue_manuskript_prompt(persona: str, themen_block: str, zusatz_anweisung: str | None) -> str:
     prompt = (
-        "Du schreibst das Manuskript für die nächste Folge eines KI-News-Podcasts. "
+        f"{persona}\n\n"
+        "Du schreibst das Manuskript für die nächste Folge deines Podcasts. "
         "Hier sind die Themen für diese Episode:\n\n"
         f"{themen_block}\n\n"
-        "Schreibe daraus ein vollständiges Manuskript zum Vorlesen.\n\n"
-        "Stil-Vorgaben:\n"
-        "- Peppiger, energiegeladener Erzählstil statt reinem Nachrichtenton.\n"
-        "- Kurze, prägnante Sätze.\n"
-        "- Sprich die Hörer:innen direkt an (\"ihr\", \"euch\").\n"
-        "- Lebendige Übergänge zwischen den Themen, keine trockene Aufzählung.\n"
-        "- Nutze ruhig auch mal ein Ausrufezeichen oder eine rhetorische Frage, um Energie reinzubringen.\n"
-        "- Trotzdem seriös und faktenbasiert bleiben - nicht reißerisch, nur nicht monoton vorgetragen.\n"
-        "- Kurze Begrüßung am Anfang, kurzer Abschluss am Ende.\n\n"
+        "Schreibe daraus ein vollständiges Manuskript zum Vorlesen, in deiner oben "
+        "beschriebenen Rolle und deinem Stil. Kurze Begrüßung am Anfang, kurzer "
+        "Abschluss am Ende.\n\n"
         "Gib NUR den reinen Manuskripttext zurück, ohne Regieanweisungen, "
         "Kapitelüberschriften oder Markdown-Formatierung."
     )
@@ -92,8 +108,8 @@ def baue_manuskript_prompt(themen_block: str, zusatz_anweisung: str | None) -> s
     return prompt
 
 
-def erstelle_manuskript(chat_model, themen_block: str, zusatz_anweisung: str | None) -> str:
-    prompt = baue_manuskript_prompt(themen_block, zusatz_anweisung)
+def erstelle_manuskript(chat_model, persona: str, themen_block: str, zusatz_anweisung: str | None) -> str:
+    prompt = baue_manuskript_prompt(persona, themen_block, zusatz_anweisung)
     antwort = chat_model.generate_content(prompt)
     return antwort.text.strip()
 
@@ -101,6 +117,8 @@ def erstelle_manuskript(chat_model, themen_block: str, zusatz_anweisung: str | N
 def erstelle_episode(zusatz_anweisung: str | None = None) -> dict | None:
     supabase = hole_supabase_client()
     chat_model = hole_chat_model()
+
+    persona = hole_moderator_persona(supabase)
 
     themen = hole_offene_themen(supabase)
     if not themen:
@@ -114,7 +132,7 @@ def erstelle_episode(zusatz_anweisung: str | None = None) -> dict | None:
 
     themen_block = baue_themen_block(themen)
     print("Erzeuge Manuskript...")
-    manuskripttext = erstelle_manuskript(chat_model, themen_block, zusatz_anweisung)
+    manuskripttext = erstelle_manuskript(chat_model, persona, themen_block, zusatz_anweisung)
     print(f"-> Manuskript erzeugt ({len(manuskripttext)} Zeichen).\n")
 
     jetzt = datetime.now(timezone.utc).isoformat()

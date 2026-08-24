@@ -78,7 +78,11 @@ def pruefe_auf_neuigkeit(text: str, thema: dict, letztes_update: str | None) -> 
     return json.loads(antwort.text)
 
 
-def verarbeite_text(text: str) -> None:
+def verarbeite_text(text: str) -> dict:
+    """Verarbeitet einen Rohtext und gibt zurück, welchem Thema er zugeordnet wurde.
+
+    Rückgabe: {"art": "neu"|"update"|"duplikat", "thema_id": str, "titel": str}
+    """
     anzeige = text if len(text) <= 80 else text[:80] + "..."
     print(f'Verarbeite Text: "{anzeige}"')
 
@@ -122,25 +126,33 @@ def verarbeite_text(text: str) -> None:
             ).execute()
             supabase.table("themen").update({"letztes_update": jetzt}).eq("id", thema_id).execute()
             print(f'-> Update zu Thema "{thema_voll["titel"]}" gespeichert.')
+            return {"art": "update", "thema_id": thema_id, "titel": thema_voll["titel"]}
         else:
             print("-> Keine neue Info erkannt, Text ist Duplikat und wird verworfen.")
+            return {"art": "duplikat", "thema_id": thema_id, "titel": thema_voll["titel"]}
     else:
         print(f"Kein ähnliches Thema gefunden (Schwellenwert {SCHWELLENWERT}). Lege neues Thema an.")
 
         titel = text.strip().splitlines()[0][:120] if text.strip() else "Unbenanntes Thema"
         jetzt = datetime.now(timezone.utc).isoformat()
 
-        supabase.table("themen").insert(
-            {
-                "titel": titel,
-                "zusammenfassung": text,
-                "erster_kontaktzeitpunkt": jetzt,
-                "letztes_update": jetzt,
-                "status": "neu",
-                "embedding": embedding,
-            }
-        ).execute()
+        neues_thema = (
+            supabase.table("themen")
+            .insert(
+                {
+                    "titel": titel,
+                    "zusammenfassung": text,
+                    "erster_kontaktzeitpunkt": jetzt,
+                    "letztes_update": jetzt,
+                    "status": "neu",
+                    "embedding": embedding,
+                }
+            )
+            .execute()
+            .data
+        )
         print(f'-> Neues Thema angelegt: "{titel}"')
+        return {"art": "neu", "thema_id": neues_thema[0]["id"], "titel": titel}
 
 
 if __name__ == "__main__":

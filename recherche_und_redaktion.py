@@ -16,6 +16,14 @@ Drei unabhängig aufrufbare Funktionen:
    offenen Vorschläge aus "agent_vorschlaege" entscheiden und legt
    Entscheidungen in "redaktion_entscheidungen" an.
 
+4. verarbeite_akzeptierte_entscheidungen()
+   Holt alle akzeptierten, noch nicht verknüpften Entscheidungen aus
+   "redaktion_entscheidungen" (thema_id IS NULL), lässt die Rohnachricht
+   über die bestehende Logik aus verarbeite_rohnachricht.py einem Thema
+   zuordnen (neues Thema, Update zu bestehendem Thema, oder Duplikat) und
+   trägt die entstandene/gefundene thema_id zur Dokumentation zurück in
+   "redaktion_entscheidungen" ein.
+
 Voraussetzung: Migration 20260824120000_agenten_konfiguration_rolle.sql
 muss angewendet sein (Spalte "rolle" in agenten_konfiguration).
 """
@@ -27,6 +35,8 @@ from datetime import datetime, timedelta, timezone
 import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
+
+import verarbeite_rohnachricht
 
 load_dotenv()
 
@@ -330,6 +340,115 @@ def fuehre_redaktion_aus(zusatz_anweisung: str | None = None) -> None:
     fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agenten[0], zusatz_anweisung)
 
 
+def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:
+    entscheidungen = (
+        supabase.table("redaktion_entscheidungen")
+        .select("id, vorschlag_id, begruendung")
+        .eq("akzeptiert", True)
+        .is_("thema_id", "null")
+        .execute()
+        .data
+    )
+    if not entscheidungen:
+        return []
+
+    vorschlag_ids = list({e["vorschlag_id"] for e in entscheidungen})
+    vorschlaege = (
+        supabase.table("agent_vorschlaege")
+        .select("id, rohnachricht_id")
+        .in_("id", vorschlag_ids)
+        .execute()
+        .data
+    )
+    rohnachricht_id_nach_vorschlag = {v["id"]: v["rohnachricht_id"] for v in vorschlaege}
+
+    rohnachricht_ids = [rid for rid in set(rohnachricht_id_nach_vorschlag.values()) if rid]
+    rohnachrichten = (
+        supabase.table("rohnachrichten").select("id, titel, text").in_("id", rohnachricht_ids).execute().data
+        if rohnachricht_ids
+        else []
+    )
+    rohnachrichten_nach_id = {r["id"]: r for r in rohnachrichten}
+
+    ergebnis = []
+    for e in entscheidungen:
+        rohnachricht_id = rohnachricht_id_nach_vorschlag.get(e["vorschlag_id"])
+        rohnachricht = rohnachrichten_nach_id.get(rohnachricht_id) if rohnachricht_id else None
+        if rohnachricht is None:
+            print(f'-> Warnung: Zu Entscheidung {e["id"]} keine Rohnachricht gefunden, wird übersprungen.')
+            continue
+        ergebnis.append(
+            {
+                "entscheidung_id": e["id"],
+                "rohnachricht_titel": rohnachricht["titel"] or "",
+                "rohnachricht_text": rohnachricht["text"] or "",
+            }
+        )
+    return ergebnis
+
+
+def verarbeite_akzeptierte_entscheidungen() -> list[dict]:
+    """Ordnet akzeptierte, noch nicht verknüpfte Entscheidungen einem Thema zu.
+
+    Holt alle Entscheidungen mit akzeptiert=true und thema_id IS NULL, lässt
+    Titel+Text der zugehörigen Rohnachricht über die bestehende Logik aus
+    verarbeite_rohnachricht.py verarbeiten (Embedding, Ähnlichkeitssuche,
+    neues Thema oder Update) und trägt die entstandene/gefundene thema_id
+    zurück in redaktion_entscheidungen ein.
+    """
+    supabase = hole_supabase_client()
+
+    offene = hole_akzeptierte_offene_entscheidungen(supabase)
+    if not offene:
+        print("Keine akzeptierten, noch nicht verknüpften Entscheidungen gefunden.")
+        return []
+
+    print(f"{len(offene)} akzeptierte Entscheidung(en) ohne Thema-Verknüpfung gefunden.\n")
+
+    ergebnisse = []
+    for eintrag in offene:
+        text = f'{eintrag["rohnachricht_titel"]}\n{eintrag["rohnachricht_text"]}'.strip()
+
+        verarbeitung = verarbeite_rohnachricht.verarbeite_text(text)
+
+        supabase.table("redaktion_entscheidungen").update({"thema_id": verarbeitung["thema_id"]}).eq(
+            "id", eintrag["entscheidung_id"]
+        ).execute()
+
+        ergebnisse.append(
+            {
+                "rohnachricht_titel": eintrag["rohnachricht_titel"],
+                "art": verarbeitung["art"],
+                "thema_titel": verarbeitung["titel"],
+                "thema_id": verarbeitung["thema_id"],
+            }
+        )
+        print(f'-> thema_id in redaktion_entscheidungen eingetragen ({verarbeitung["art"]}).\n')
+
+    neu = [r for r in ergebnisse if r["art"] == "neu"]
+    updates = [r for r in ergebnisse if r["art"] == "update"]
+    duplikate = [r for r in ergebnisse if r["art"] == "duplikat"]
+
+    print(
+        f"Fertig. {len(neu)} neue Themen, {len(updates)} Updates zu bestehenden Themen, "
+        f"{len(duplikate)} Duplikate.\n"
+    )
+    if neu:
+        print("Neue Themen:")
+        for r in neu:
+            print(f'  - "{r["thema_titel"]}" (aus: "{r["rohnachricht_titel"]}")')
+    if updates:
+        print("Updates zu bestehenden Themen:")
+        for r in updates:
+            print(f'  - "{r["thema_titel"]}" (aus: "{r["rohnachricht_titel"]}")')
+    if duplikate:
+        print("Duplikate (kein neuer Fakt, nur verknüpft):")
+        for r in duplikate:
+            print(f'  - "{r["thema_titel"]}" (aus: "{r["rohnachricht_titel"]}")')
+
+    return ergebnisse
+
+
 if __name__ == "__main__":
     befehl = sys.argv[1] if len(sys.argv) > 1 else "recherche"
 
@@ -337,10 +456,12 @@ if __name__ == "__main__":
         fuehre_recherche_agenten_aus()
     elif befehl == "redaktion":
         fuehre_redaktion_aus()
+    elif befehl == "verarbeite":
+        verarbeite_akzeptierte_entscheidungen()
     elif befehl == "agent":
         if len(sys.argv) < 3:
             print('Nutzung: python recherche_und_redaktion.py agent "<Agent-Name>" ["<Zusatz-Anweisung>"]')
         else:
             fuehre_einzelnen_agenten_aus(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     else:
-        print(f'Unbekannter Befehl: "{befehl}". Nutze "recherche", "redaktion" oder "agent".')
+        print(f'Unbekannter Befehl: "{befehl}". Nutze "recherche", "redaktion", "verarbeite" oder "agent".')

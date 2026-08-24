@@ -78,6 +78,8 @@ Aktuell ein Agent: **Redaktion KMU** (fokus: Perspektive eines Geschäftsführer
 
 **Ändern:** Table Editor → `agenten_konfiguration` → Zeile mit `name = 'Redaktion KMU'` → `fokus_beschreibung` bearbeiten. Beispiel: Um strenger zu selektieren, im Fokus-Text ergänzen "Lehne alles ab, was nicht in den nächsten 4 Wochen praktisch relevant ist."
 
+**Update-Check für bereits gesendete Themen:** Nach der normalen Vorschlags-Bewertung prüft derselbe Redaktions-Agent zusätzlich alle neuen Einträge in `themen_updates`, deren Thema bereits den Status "gesendet" hat (`pruefe_updates_zu_gesendeten_themen`). Für jedes Update entscheidet Gemini mit Begründung, ob es wichtig genug ist, das Thema erneut aufzugreifen (z.B. "Fall wurde final entschieden" ja, "Verzögerung um zwei Tage" eher nicht). Bei Ja wird der Themen-Status zurück auf "in Verfolgung" gesetzt; die Entscheidung landet in jedem Fall (auch bei Nein) in `redaktion_update_entscheidungen`. Der Moderator merkt bei so wiederaufgenommenen Themen im Manuskript kurz an, dass es sich um eine Fortsetzung handelt (siehe Abschnitt 6).
+
 **Einzeln testen:**
 
 ```python
@@ -117,6 +119,7 @@ Es gibt aktuell **keinen** `fuehre_einzelnen_agenten_aus`-Test für den Moderato
 | `redaktion_entscheidungen` | Redaktions-Entscheidungen zu jedem Vorschlag | `vorschlag_id`, `akzeptiert`, `begruendung`, `thema_id` (nullable), `entschieden_am` | `vorschlag_id` → `agent_vorschlaege.id`; `thema_id` → `themen.id` (wird erst nach `verarbeite_akzeptierte_entscheidungen()` befüllt) |
 | `themen` | Konsolidierte Themen (nach Dedup) | `titel`, `zusammenfassung`, `status` (neu / in Verfolgung / gesendet), `erster_kontaktzeitpunkt`, `letztes_update`, `embedding` (vector(768), Gemini) | - |
 | `themen_updates` | Historie neuer Fakten zu einem bestehenden Thema | `thema_id`, `was_neu`, `datum` | `thema_id` → `themen.id` (cascade delete) |
+| `redaktion_update_entscheidungen` | Redaktions-Entscheidungen über Updates zu bereits gesendeten Themen | `update_id`, `thema_id`, `wieder_aufgenommen`, `begruendung`, `entschieden_am` | `update_id` → `themen_updates.id`; `thema_id` → `themen.id` (cascade delete) |
 | `episoden` | Fertige Episoden | `datum`, `manuskripttext`, `audio_pfad`, `kosten` (aktuell nirgends befüllt) | - |
 
 Ähnlichkeitssuche für Dedup läuft über die SQL-Funktion `finde_aehnliche_themen(such_embedding, schwellenwert)` (Cosine Similarity via `pgvector`/HNSW-Index auf `themen.embedding`).
@@ -132,6 +135,7 @@ Es gibt aktuell **keinen** `fuehre_einzelnen_agenten_aus`-Test für den Moderato
    - Gibt es einen Treffer: Gemini prüft, ob der neue Text einen konkreten neuen Fakt enthält → entweder Eintrag in `themen_updates` (Update) oder Verwerfen als Duplikat (nur Verknüpfung, kein neuer Inhalt)
    - Kein Treffer: neues Thema in `themen` mit Status `neu`
 5. **Finale Manuskript-Auswahl:** `generiere_episode.py` holt alle Themen mit Status `neu` oder `in Verfolgung` (unabhängig davon, wie sie entstanden sind) und lässt den Moderator-Agenten daraus die 5-6 wichtigsten für die aktuelle Folge auswählen (Abschnitt "THEMENAUSWAHL" im Prompt, siehe Abschnitt 6). Nur die vom Moderator tatsächlich verwendeten Themen werden danach auf Status `gesendet` gesetzt; die übrigen bleiben offen für die nächste Folge.
+6. **Update-Check nach dem Senden:** Kommt zu einem bereits gesendeten Thema (`themen.status = 'gesendet'`) später ein neues Update in `themen_updates` hinzu, prüft der Redaktions-Agent bei seinem nächsten Lauf, ob das Update wichtig genug ist, um das Thema zurück auf `in Verfolgung` zu setzen - und damit erneut für die Manuskript-Auswahl (Schritt 5) in Frage kommt (siehe Abschnitt 3).
 
 ## 6. Wie man den Manuskript-Stil ändert
 
@@ -143,6 +147,7 @@ Der komplette Struktur-Prompt liegt in **`generiere_episode.py`**, Funktion **`b
 | `LÄNGE` | Ziel-Wortzahl (aktuell 1400-1600 Wörter) und wie diese erreicht wird (Tiefe statt mehr Themen) |
 | `AUFBAU DER EPISODE` | Hook-Einstieg, Drei-Teile-Struktur pro Thema, Übergänge zwischen Themen, Variation von Satzenden/-anfängen und Übergangsformulierungen, Abschluss |
 | `HUMOR` | Ob/wo trockener Humor eingebaut wird, und wo explizit nicht (ernste Themen) |
+| `FORTSETZUNGEN` | Themen mit Status `in Verfolgung`, die per Update-Check wiederaufgenommen wurden, bekommen eine kurze Anmoderation ("Erinnert ihr euch an...", "Update zu einer Geschichte, die wir schon hatten"), bevor die neue Entwicklung erzählt wird - bei Themen ohne diesen Hinweis nicht |
 
 Um etwas zu ändern: die Datei direkt öffnen, den passenden Textblock in `baue_manuskript_prompt` bearbeiten. Es ist reiner Prompt-Text (deutsche Sätze), kein strukturierter Code - keine Programmierkenntnisse nötig, um z.B. die Wortzahl-Grenzen oder die Humor-Regeln anzupassen.
 
@@ -230,6 +235,7 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 | Neuen Recherche-Agenten hinzufügen | neue Zeile mit `rolle='recherche'` | Table Editor, `agenten_konfiguration` |
 | Wie viele Nachrichten ein Recherche-Agent vorschlägt | Prompt-Text "3-5 relevantesten" | `waehle_relevante_nachrichten` in `recherche_und_redaktion.py` |
 | Wie viele Themen die Redaktion akzeptiert | Prompt-Text "4-6 wichtigsten" | `entscheide_ueber_vorschlaege` in `recherche_und_redaktion.py` |
+| Ob ein Update zu einem bereits gesendeten Thema es zurückholt | Prompt-Text in `entscheide_ueber_updates` | `recherche_und_redaktion.py` |
 | Wie ähnlich zwei Nachrichten sein müssen, um als "gleiches Thema" zu gelten | `SCHWELLENWERT` (aktuell 0.85) | `verarbeite_rohnachricht.py` |
 | Wie alt Nachrichten maximal sein dürfen | `MAX_ALTER_TAGE` | `rss_einlesen.py` bzw. `recherche_und_redaktion.py` |
 | Sprechgeschwindigkeit der Audiodatei | `DEEPGRAM_SPEED_STANDARD` | `generiere_audio.py` (wirkt nur bei englischen Stimmen) |

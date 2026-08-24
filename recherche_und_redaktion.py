@@ -14,7 +14,12 @@ Drei unabhängig aufrufbare Funktionen:
 3. fuehre_redaktion_aus(zusatz_anweisung=None)
    Lässt den aktiven Redaktions-Agenten (rolle='redaktion') über alle
    offenen Vorschläge aus "agent_vorschlaege" entscheiden und legt
-   Entscheidungen in "redaktion_entscheidungen" an.
+   Entscheidungen in "redaktion_entscheidungen" an. Prüft danach zusätzlich
+   alle neuen Einträge aus "themen_updates", deren zugehöriges Thema bereits
+   den Status "gesendet" hat: Gemini entscheidet, ob das Update wichtig genug
+   ist, um das Thema erneut aufzugreifen. Falls ja, wird der Status des
+   Themas zurück auf "in Verfolgung" gesetzt und die Entscheidung in
+   "redaktion_update_entscheidungen" dokumentiert.
 
 4. verarbeite_akzeptierte_entscheidungen()
    Holt alle akzeptierten, noch nicht verknüpften Entscheidungen aus
@@ -25,7 +30,9 @@ Drei unabhängig aufrufbare Funktionen:
    "redaktion_entscheidungen" ein.
 
 Voraussetzung: Migration 20260824120000_agenten_konfiguration_rolle.sql
-muss angewendet sein (Spalte "rolle" in agenten_konfiguration).
+muss angewendet sein (Spalte "rolle" in agenten_konfiguration), sowie
+Migration 20260824160000_redaktion_update_entscheidungen.sql (Tabelle
+"redaktion_update_entscheidungen").
 """
 import json
 import os
@@ -370,6 +377,144 @@ def fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent: dict, zusatz_
     return len(entscheidungen)
 
 
+def hole_offene_updates(supabase) -> list[dict]:
+    updates = (
+        supabase.table("themen_updates").select("id, thema_id, was_neu, datum").execute().data
+    )
+    if not updates:
+        return []
+
+    entscheidungen = (
+        supabase.table("redaktion_update_entscheidungen").select("update_id").execute().data
+    )
+    bereits_entschieden = {e["update_id"] for e in entscheidungen}
+
+    offene = [u for u in updates if u["id"] not in bereits_entschieden]
+    if not offene:
+        return []
+
+    thema_ids = list({u["thema_id"] for u in offene})
+    themen = (
+        supabase.table("themen")
+        .select("id, titel, zusammenfassung, status")
+        .in_("id", thema_ids)
+        .execute()
+        .data
+    )
+    themen_nach_id = {t["id"]: t for t in themen}
+
+    ergebnis = []
+    for u in offene:
+        thema = themen_nach_id.get(u["thema_id"])
+        if thema is None or thema["status"] != "gesendet":
+            continue
+        ergebnis.append(
+            {
+                "id": u["id"],
+                "thema_id": u["thema_id"],
+                "thema_titel": thema["titel"],
+                "thema_zusammenfassung": thema.get("zusammenfassung") or "",
+                "was_neu": u["was_neu"],
+            }
+        )
+    return ergebnis
+
+
+def baue_update_block(i: int, u: dict) -> str:
+    return (
+        f'[{i}] Bereits gesendetes Thema: {u["thema_titel"]}\n'
+        f'Bisheriger Stand: {u["thema_zusammenfassung"]}\n'
+        f'Neues Update: {u["was_neu"]}'
+    )
+
+
+def entscheide_ueber_updates(chat_model, systemkontext: str, updates: list[dict]) -> list[dict]:
+    updates_block = "\n\n".join(baue_update_block(i, u) for i, u in enumerate(updates))
+
+    prompt = (
+        f"{systemkontext}\n\n"
+        "Die folgenden Themen wurden bereits in einer Episode gesendet, es gibt aber "
+        "seitdem ein neues Update dazu. Entscheide für JEDES Update, ob es wichtig genug "
+        'ist, um das Thema erneut aufzugreifen (z.B. "der Fall wurde jetzt final '
+        'entschieden" ist wichtig, "kleine Verzögerung um zwei Tage" eher nicht). Gib für '
+        "JEDES Update eine Entscheidung ab (auch für die nicht wieder aufgenommenen), "
+        "jeweils mit Begründung.\n\n"
+        f"{updates_block}\n\n"
+        "Antworte NUR mit JSON in diesem Format: "
+        '[{"index": int, "wieder_aufnehmen": bool, "begruendung": string}]'
+    )
+
+    antwort = chat_model.generate_content(
+        prompt,
+        generation_config={"response_mime_type": "application/json"},
+    )
+    entscheidungen = json.loads(antwort.text)
+
+    ergebnis = []
+    for eintrag in entscheidungen:
+        index = eintrag.get("index")
+        if index is None or not (0 <= index < len(updates)):
+            print(f"-> Warnung: Gemini-Entscheidung mit ungültigem Index {index} wird übersprungen.")
+            continue
+        update = updates[index]
+        ergebnis.append(
+            {
+                "update_id": update["id"],
+                "thema_id": update["thema_id"],
+                "thema_titel": update["thema_titel"],
+                "wieder_aufgenommen": bool(eintrag.get("wieder_aufnehmen")),
+                "begruendung": eintrag.get("begruendung", ""),
+            }
+        )
+    return ergebnis
+
+
+def pruefe_updates_zu_gesendeten_themen(
+    supabase, chat_model, agent: dict, zusatz_anweisung: str | None
+) -> int:
+    print("Prüfe Updates zu bereits gesendeten Themen...")
+
+    offene_updates = hole_offene_updates(supabase)
+    if not offene_updates:
+        print("-> Keine neuen Updates zu gesendeten Themen.\n")
+        return 0
+
+    systemkontext = baue_systemkontext(agent.get("fokus_beschreibung") or "", zusatz_anweisung)
+    entscheidungen = entscheide_ueber_updates(chat_model, systemkontext, offene_updates)
+
+    if not entscheidungen:
+        print("-> Gemini hat keine verwertbaren Entscheidungen geliefert.\n")
+        return 0
+
+    jetzt = datetime.now(timezone.utc).isoformat()
+    wieder_aufgenommen_anzahl = 0
+    for entscheidung in entscheidungen:
+        supabase.table("redaktion_update_entscheidungen").insert(
+            {
+                "update_id": entscheidung["update_id"],
+                "thema_id": entscheidung["thema_id"],
+                "wieder_aufgenommen": entscheidung["wieder_aufgenommen"],
+                "begruendung": entscheidung["begruendung"],
+                "entschieden_am": jetzt,
+            }
+        ).execute()
+
+        if entscheidung["wieder_aufgenommen"]:
+            supabase.table("themen").update({"status": "in Verfolgung"}).eq(
+                "id", entscheidung["thema_id"]
+            ).execute()
+            wieder_aufgenommen_anzahl += 1
+            print(f'-> wieder aufgenommen: "{entscheidung["thema_titel"]}"')
+        else:
+            print(f'-> nicht wieder aufgenommen: "{entscheidung["thema_titel"]}"')
+
+    print(
+        f"-> {len(entscheidungen)} Update-Entscheidung(en) gespeichert "
+        f"({wieder_aufgenommen_anzahl} Thema/Themen wieder aufgenommen).\n"
+    )
+    return len(entscheidungen)
+
+
 def fuehre_recherche_agenten_aus(zusatz_anweisung: str | None = None) -> None:
     """Lässt alle aktiven Recherche-Agenten über neue Rohnachrichten laufen."""
     supabase = hole_supabase_client()
@@ -426,7 +571,9 @@ def fuehre_redaktion_aus(zusatz_anweisung: str | None = None) -> None:
             f'nutze den ersten: "{agenten[0]["name"]}".'
         )
 
-    fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agenten[0], zusatz_anweisung)
+    agent = agenten[0]
+    fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung)
+    pruefe_updates_zu_gesendeten_themen(supabase, chat_model, agent, zusatz_anweisung)
 
 
 def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:

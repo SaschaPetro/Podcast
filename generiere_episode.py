@@ -86,6 +86,11 @@ def baue_themen_block(themen: list[dict]) -> str:
     bloecke = []
     for t in themen:
         block = f'[ID: {t["id"]}] Thema: {t["titel"]}\nStand: {t["zusammenfassung"] or ""}'
+        if t["status"] == "in Verfolgung":
+            block += (
+                "\nHinweis: Fortsetzung eines bereits gesendeten Themas - es gibt eine "
+                "wichtige neue Entwicklung."
+            )
         if t["updates"]:
             block += "\nNeue Fakten seitdem:\n" + "\n".join(f"- {u}" for u in t["updates"])
         bloecke.append(block)
@@ -112,6 +117,12 @@ def baue_manuskript_prompt(persona: str, themen_block: str, zusatz_anweisung: st
         "zusätzliches konkretes Detail, ein kurzes Beispiel aus der Praxis, oder "
         "eine kurze Einordnung, warum das Thema gerade jetzt relevant ist. Jeder "
         "Themenblock darf ruhig 30-50% länger werden als bisher.\n\n"
+        "FORTSETZUNGEN:\n\n"
+        '- Trägt ein Thema den Hinweis "Fortsetzung eines bereits gesendeten Themas", '
+        "erwähne kurz und beiläufig, dass ihr darüber schon mal gesprochen habt "
+        '(z.B. "Erinnert ihr euch an ..." oder "Update zu einer Geschichte, die wir '
+        'schon hatten"), bevor du die neue Entwicklung erzählst. Bei Themen ohne diesen '
+        "Hinweis: keine solche Anmoderation.\n\n"
         "AUFBAU DER EPISODE:\n\n"
         "- Kein \"Hallo zusammen\" oder \"hier sind die Meldungen des Tages\" als "
         "Einstieg. Steig direkt beim ersten Thema mit einem Hook ein: eine "

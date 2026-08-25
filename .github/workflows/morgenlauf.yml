@@ -46,6 +46,26 @@ jobs:
           set -o pipefail
           python morgenlauf.py | tee lauf.log
 
+      - name: Fehlschlag in Job-Zusammenfassung markieren
+        if: failure()
+        run: |
+          {
+            echo "> [!CAUTION]"
+            echo "> **Morgenlauf fehlgeschlagen**"
+            echo ">"
+            echo "> Lauf [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) ist mit einem Fehler abgebrochen. Volles Log im Artefakt \`morgenlauf-${{ github.run_id }}\` (lauf.log)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -f lauf.log ]; then
+            {
+              echo ""
+              echo "**Letzte Zeilen von lauf.log:**"
+              echo '```'
+              tail -n 30 lauf.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Lauf-Log und Audio als Artefakt sichern
         if: always()
         uses: actions/upload-artifact@v4

@@ -16,6 +16,14 @@ Zwei unabhängig aufrufbare Funktionen:
    zusätzlich "verwendete_themen" (id/titel/zusammenfassung der tatsächlich
    verwendeten Themen) für den nachfolgenden Faktencheck.
 
+   Speichert danach für jedes tatsächlich verwendete Thema dauerhaft die
+   verknüpften Original-Rohnachrichten (Quelle-Name, URL, Titel) in
+   "episoden_quellen" - über denselben Datenweg wie pruefe_manuskript
+   (redaktion_entscheidungen -> agent_vorschlaege -> rohnachrichten). Themen
+   ohne nachvollziehbare Verknüpfung (z.B. alte Seed-/Testdaten) bekommen
+   keine Zeile, nur eine Konsolen-Meldung. Voraussetzung: Migration
+   20260825134000_episoden_quellen.sql muss angewendet sein.
+
    Erkennt automatisch den Wochentag und schaltet für Montag/Freitag ein
    Sonderformat frei (siehe Abschnitt 6 der README): montags wird der
    Einstieg explizit als Wochenend-Rückblick gerahmt (Themen/Updates vom
@@ -510,7 +518,11 @@ def erstelle_episode(
         print(f"-> {len(gueltige_ids)} Thema/Themen als 'gesendet' markiert.\n")
 
     themen_nach_id = {t["id"]: t for t in themen}
-    episode["verwendete_themen"] = [themen_nach_id[tid] for tid in gueltige_ids]
+    verwendete_themen = [themen_nach_id[tid] for tid in gueltige_ids]
+    episode["verwendete_themen"] = verwendete_themen
+
+    if verwendete_themen:
+        speichere_episoden_quellen(supabase, episode_id, verwendete_themen)
 
     return episode
 
@@ -547,7 +559,7 @@ def hole_quellen_fuer_themen(supabase, thema_ids: list[str]) -> dict[str, list[d
     rohnachricht_ids = list({rid for rid in rohnachricht_id_nach_vorschlag.values() if rid})
     rohnachrichten = (
         supabase.table("rohnachrichten")
-        .select("id, titel, text")
+        .select("id, titel, text, quelle, url")
         .in_("id", rohnachricht_ids)
         .execute()
         .data
@@ -569,6 +581,38 @@ def hole_quellen_fuer_themen(supabase, thema_ids: list[str]) -> dict[str, list[d
         quellen_nach_thema[thema_id].append(rohnachricht)
 
     return quellen_nach_thema
+
+
+def speichere_episoden_quellen(supabase, episode_id: str, themen: list[dict]) -> None:
+    """Legt für jedes tatsächlich verwendete Thema die verknüpften Original-Rohnachrichten
+    in episoden_quellen ab (gleicher Datenweg wie hole_quellen_fuer_themen:
+    redaktion_entscheidungen -> agent_vorschlaege -> rohnachrichten). Themen ohne
+    nachvollziehbare Verknüpfung (z.B. alte Seed-/Testdaten) bekommen keine Zeile,
+    nur eine Konsolen-Meldung - kein Fehler."""
+    thema_ids = [t["id"] for t in themen]
+    quellen_nach_thema = hole_quellen_fuer_themen(supabase, thema_ids)
+
+    zeilen = []
+    for t in themen:
+        quellen = quellen_nach_thema.get(t["id"], [])
+        if not quellen:
+            print(f'Thema "{t["titel"]}": keine Quellenverknüpfung vorhanden.')
+            continue
+        for q in quellen:
+            zeilen.append(
+                {
+                    "episode_id": episode_id,
+                    "thema_id": t["id"],
+                    "rohnachricht_id": q["id"],
+                    "quelle_name": q.get("quelle"),
+                    "quelle_url": q.get("url"),
+                    "titel": q.get("titel"),
+                }
+            )
+
+    if zeilen:
+        supabase.table("episoden_quellen").insert(zeilen).execute()
+        print(f"-> {len(zeilen)} Quellen-Verknüpfung(en) in episoden_quellen gespeichert.\n")
 
 
 def baue_quellen_block(themen: list[dict], quellen_nach_thema: dict[str, list[dict]]) -> str:

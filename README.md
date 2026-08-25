@@ -161,9 +161,12 @@ Am Ende des Prompts wird die KI zusätzlich angewiesen, als letzte Zeile `VERWEN
 SUPABASE_URL=
 SUPABASE_KEY=
 GEMINI_API_KEY=
+GEMINI_MODEL_NAME=
 DEEPGRAM_API_KEY=
 ELEVENLABS_API_KEY=
 ```
+
+`GEMINI_MODEL_NAME` steuert zentral, welches Gemini-Modell `generiere_episode.py`, `recherche_und_redaktion.py` und `verarbeite_rohnachricht.py` für Text/Redaktion verwenden (aktuell `gemini-2.5-flash-lite` - höheres Free-Tier-Kontingent als `gemini-3.6-flash`, das nur 20 Anfragen/Tag erlaubt).
 
 Zusätzlich in `.env` vorhanden, aber aktuell **nicht** von der Haupt-Pipeline verwendet (nur experimentell in `test_apis.py`):
 
@@ -239,7 +242,7 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 | Wie ähnlich zwei Nachrichten sein müssen, um als "gleiches Thema" zu gelten | `SCHWELLENWERT` (aktuell 0.85) | `verarbeite_rohnachricht.py` |
 | Wie alt Nachrichten maximal sein dürfen | `MAX_ALTER_TAGE` | `rss_einlesen.py` bzw. `recherche_und_redaktion.py` |
 | Sprechgeschwindigkeit der Audiodatei | `DEEPGRAM_SPEED_STANDARD` | `generiere_audio.py` (wirkt nur bei englischen Stimmen) |
-| Welches Gemini-Modell für Text/Redaktion verwendet wird | `CHAT_MODEL` | jeweils oben in `generiere_episode.py` / `recherche_und_redaktion.py` / `verarbeite_rohnachricht.py` |
+| Welches Gemini-Modell für Text/Redaktion verwendet wird | `GEMINI_MODEL_NAME` | `.env` |
 
 ---
 

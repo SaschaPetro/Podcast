@@ -6,11 +6,15 @@ datum im Feed, falls vorhanden). Einträge, deren URL bereits in
 "rohnachrichten" existiert, werden übersprungen.
 """
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 import feedparser
 from dotenv import load_dotenv
 from supabase import create_client
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 

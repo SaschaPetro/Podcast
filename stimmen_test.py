@@ -10,9 +10,13 @@ https://developers.deepgram.com/docs/tts-models):
 - Julius:   mehr Persönlichkeit/Drive (Casual, Cheerful, Engaging, Expressive, Friendly)
 """
 import os
+import sys
 
 from deepgram import DeepgramClient
 from dotenv import load_dotenv
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 

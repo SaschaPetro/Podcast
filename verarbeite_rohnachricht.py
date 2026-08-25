@@ -18,11 +18,14 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 load_dotenv()
 
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_DIM = 768
-CHAT_MODEL = "gemini-3.6-flash"
+CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
 SCHWELLENWERT = 0.85
 
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])

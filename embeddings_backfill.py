@@ -5,10 +5,14 @@ Voraussetzung: Migration 20260824095747_embedding_dim_768_gemini.sql muss
 angewendet sein (Spalte "embedding" ist dann vector(768) statt vector(1536)).
 """
 import os
+import sys
 
 import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 

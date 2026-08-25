@@ -45,9 +45,12 @@ from supabase import create_client
 
 import verarbeite_rohnachricht
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 load_dotenv()
 
-CHAT_MODEL = "gemini-3.6-flash"
+CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
 MAX_ALTER_TAGE = 3
 MAX_ZURUECKSTELLUNG_TAGE = 3
 GUELTIGE_STATUS = {"akzeptiert", "abgelehnt", "zurueckgestellt"}

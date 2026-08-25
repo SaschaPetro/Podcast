@@ -1,10 +1,14 @@
 """Erzeugt eine Audiodatei aus Text, wahlweise über Deepgram oder ElevenLabs."""
 import os
 import re
+import sys
 
 from deepgram import DeepgramClient
 from dotenv import load_dotenv
 from elevenlabs import ElevenLabs
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 

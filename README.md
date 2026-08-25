@@ -109,6 +109,8 @@ Ein Agent: **Podcast-Moderator** (Ton: direkt, "ihr"-Ansprache, kein Hype, Frist
 
 **Was er tut:** Bekommt alle offenen Themen (Status "neu" oder "in Verfolgung") samt Update-Historie, wählt die 5-6 wichtigsten aus und schreibt das komplette Episoden-Manuskript (`erstelle_episode` in `generiere_episode.py`). Der Moderator-Fokus wird dabei mit dem festen Struktur-Prompt aus `baue_manuskript_prompt` kombiniert (siehe Abschnitt 6).
 
+**Montag-/Freitag-Sonderformat:** `erstelle_episode` erkennt automatisch den aktuellen Wochentag und schaltet montags und freitags ein Sonderformat frei (Details siehe Abschnitt 6) - Di-Do läuft im Standard-Format. Zum Testen lässt sich das Format über den Parameter `format` erzwingen, unabhängig vom tatsächlichen Wochentag.
+
 **Ändern:** Table Editor → `agenten_konfiguration` → Zeile mit `rolle = 'moderator'` → `fokus_beschreibung` bearbeiten. Das steuert den grundsätzlichen Ton/die Persona; Länge, Aufbau, Humor etc. liegen dagegen im Code (Abschnitt 6).
 
 **Einzeln testen** (Achtung: erzeugt eine echte Episode in `episoden` und markiert Themen als "gesendet" - siehe Abschnitt 8 zum Zurücksetzen):
@@ -117,7 +119,13 @@ Ein Agent: **Podcast-Moderator** (Ton: direkt, "ihr"-Ansprache, kein Hype, Frist
 from generiere_episode import erstelle_episode
 
 erstelle_episode("Fasse diesmal nur die drei wichtigsten Themen zusammen.")
+
+# Sonderformat zum Testen erzwingen, unabhängig vom heutigen Wochentag:
+erstelle_episode(format="montag")
+erstelle_episode(format="freitag")
 ```
+
+Oder über die Kommandozeile: `python generiere_episode.py format=montag`
 
 Es gibt aktuell **keinen** `fuehre_einzelnen_agenten_aus`-Test für den Moderator ohne Seiteneffekte - jeder Aufruf von `erstelle_episode` legt eine echte Zeile in `episoden` an und markiert Themen als gesendet.
 
@@ -161,6 +169,12 @@ Der komplette Struktur-Prompt liegt in **`generiere_episode.py`**, Funktion **`b
 | `AUFBAU DER EPISODE` | Hook-Einstieg, Drei-Teile-Struktur pro Thema, Übergänge zwischen Themen, Variation von Satzenden/-anfängen und Übergangsformulierungen, Abschluss |
 | `HUMOR` | Ob/wo trockener Humor eingebaut wird, und wo explizit nicht (ernste Themen) |
 | `FORTSETZUNGEN` | Themen mit Status `in Verfolgung`, die per Update-Check wiederaufgenommen wurden, bekommen eine kurze Anmoderation ("Erinnert ihr euch an...", "Update zu einer Geschichte, die wir schon hatten"), bevor die neue Entwicklung erzählt wird - bei Themen ohne diesen Hinweis nicht |
+| `BESONDERHEIT DIESER FOLGE` (nur Montag/Freitag) | Wird von `baue_format_hinweis` erzeugt und nur eingefügt, wenn `erstelle_episode` per Wochentag-Erkennung (oder per `format`-Parameter) das Montag- oder Freitag-Format ausgewählt hat - siehe unten |
+
+**Montag-/Freitag-Sonderformate:** `erstelle_episode(zusatz_anweisung=None, format=None)` erkennt automatisch über `bestimme_format` den aktuellen Wochentag (Montag/Freitag laufen unter Sonderformat, Di-Do wie bisher als `"standard"`) und lässt sich zum Testen per `format="montag"`/`"freitag"`/`"standard"` erzwingen, egal welcher Wochentag gerade real ist.
+
+- **Montag:** `hole_offene_themen()` selektiert ohnehin schon alle offenen Themen unabhängig vom Erstellungsdatum (keine 3-Tage-Regel auf dieser Ebene) - Themen/Updates vom Wochenende sind also immer schon dabei. Neu ist nur, dass `baue_themen_block(..., mit_daten=True)` das Erfassungsdatum jedes Themas sowie das Datum jedes Updates mit ausgibt, und `baue_format_hinweis` Gemini die konkreten Kalenderdaten von Samstag/Sonntag nennt - damit der Moderator den Einstieg gezielt als Wochenend-Rückblick rahmen kann, wenn tatsächlich etwas vom Wochenende dabei ist (sonst normaler Einstieg).
+- **Freitag:** zusätzlich zu den normalen offenen Themen holt `hole_themen_der_woche()` alle Themen (jeder Status, auch bereits "gesendete") mit Aktivität seit Montag dieser Woche samt ihrer Updates dieser Woche. `baue_wochenrueckblick_block` rendert daraus einen `WOCHENRÜCKBLICK`-Kontextabschnitt im Prompt, den Gemini laut `baue_format_hinweis` für die "große Linie" der Woche nutzen soll, statt die Meldungen nochmal einzeln aufzuzählen.
 
 Um etwas zu ändern: die Datei direkt öffnen, den passenden Textblock in `baue_manuskript_prompt` bearbeiten. Es ist reiner Prompt-Text (deutsche Sätze), kein strukturierter Code - keine Programmierkenntnisse nötig, um z.B. die Wortzahl-Grenzen oder die Humor-Regeln anzupassen.
 
@@ -245,6 +259,7 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 | Mehr/weniger Humor | Prompt in `generiere_episode.py` | Datei direkt, Abschnitt "HUMOR" |
 | Andere Stimme/Anbieter | `generiere_audio.py` | `anbieter`-Parameter (`"deepgram"`/`"elevenlabs"`), bzw. `DEEPGRAM_MODEL`/`ELEVENLABS_VOICE_ID` |
 | Mehr/weniger Themen pro Folge | Prompt in `generiere_episode.py` | Abschnitt "THEMENAUSWAHL" |
+| Montag-/Freitag-Sonderformat anpassen | `baue_format_hinweis` in `generiere_episode.py` | Datei direkt; zum Testen `format="montag"`/`"freitag"`/`"standard"` an `erstelle_episode` übergeben |
 | Strengere/lockerere Redaktion | `fokus_beschreibung` (Zeile `rolle='redaktion'`) | Table Editor, `agenten_konfiguration` |
 | Mehr/weniger Chancen- statt Sicherheits-/Risiko-Themen | `fokus_beschreibung` (Zeile `rolle='redaktion'`) | Table Editor, `agenten_konfiguration` |
 | Neue RSS-Quelle hinzufügen | `FEEDS`-Liste | `rss_einlesen.py` |

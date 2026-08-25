@@ -7,7 +7,7 @@ Gemini-Prompt.
 
 Zwei unabhängig aufrufbare Funktionen:
 
-1. erstelle_episode(zusatz_anweisung=None)
+1. erstelle_episode(zusatz_anweisung=None, format=None)
    Holt die aktive Moderator-Persona sowie alle Themen mit Status "neu" oder
    "in Verfolgung" samt ihren bisherigen Updates aus "themen_updates", lässt
    Gemini daraus im Ton dieser Persona ein Manuskript schreiben, speichert es
@@ -15,6 +15,16 @@ Zwei unabhängig aufrufbare Funktionen:
    nicht in der nächsten Episode erneut auftauchen. Der Rückgabewert enthält
    zusätzlich "verwendete_themen" (id/titel/zusammenfassung der tatsächlich
    verwendeten Themen) für den nachfolgenden Faktencheck.
+
+   Erkennt automatisch den Wochentag und schaltet für Montag/Freitag ein
+   Sonderformat frei (siehe Abschnitt 6 der README): montags wird der
+   Einstieg explizit als Wochenend-Rückblick gerahmt (Themen/Updates vom
+   Samstag/Sonntag werden dafür mit Datum an Gemini übergeben), freitags
+   bekommt Gemini zusätzlich einen Wochenrückblick (alle Themen/Updates seit
+   Montag dieser Woche, unabhängig vom Status) als Kontext für den
+   Wochenbogen. Di-Do läuft im bisherigen Standard-Format. Für Tests kann
+   das Format über den Parameter erzwungen werden, z.B. format="montag"
+   (gültig: "montag", "freitag", "standard").
 
 2. pruefe_manuskript(episode_id, manuskripttext, themen)
    Sammelt für jedes übergebene Thema die verknüpften Original-Rohnachrichten
@@ -29,7 +39,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -43,9 +53,35 @@ load_dotenv()
 CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
 OFFENE_STATUS = ("neu", "in Verfolgung")
 
+FORMAT_NACH_WOCHENTAG = {0: "montag", 4: "freitag"}  # datetime.weekday(): Montag=0 .. Sonntag=6
+GUELTIGE_FORMATE = {"montag", "freitag", "standard"}
+
 
 def hole_supabase_client():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+
+def bestimme_format(format: str | None, heute: datetime) -> str:
+    """Validiert einen Format-Override, sonst wird das Format per Wochentag abgeleitet."""
+    if format is not None:
+        if format not in GUELTIGE_FORMATE:
+            raise ValueError(f'Unbekanntes Format "{format}", erlaubt: {sorted(GUELTIGE_FORMATE)}')
+        return format
+    return FORMAT_NACH_WOCHENTAG.get(heute.weekday(), "standard")
+
+
+def hole_wochenstart(heute: datetime) -> datetime:
+    """Montag 00:00 UTC der Kalenderwoche von `heute`."""
+    start = heute - timedelta(days=heute.weekday())
+    return start.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def hole_wochenende_daten(heute: datetime) -> tuple[str, str]:
+    """(Samstag, Sonntag) des letzten Wochenendes vor der Kalenderwoche von `heute`, als ISO-Datum."""
+    wochenstart = hole_wochenstart(heute)
+    samstag = (wochenstart - timedelta(days=2)).date().isoformat()
+    sonntag = (wochenstart - timedelta(days=1)).date().isoformat()
+    return samstag, sonntag
 
 
 def hole_chat_model():
@@ -73,7 +109,7 @@ def hole_moderator_persona(supabase) -> str:
 def hole_offene_themen(supabase) -> list[dict]:
     themen = (
         supabase.table("themen")
-        .select("id, titel, zusammenfassung, status")
+        .select("id, titel, zusammenfassung, status, erster_kontaktzeitpunkt")
         .in_("status", OFFENE_STATUS)
         .execute()
         .data
@@ -90,29 +126,143 @@ def hole_offene_themen(supabase) -> list[dict]:
         .execute()
         .data
     )
-    updates_nach_thema: dict[str, list[str]] = {}
+    updates_nach_thema: dict[str, list[dict]] = {}
     for u in updates:
-        updates_nach_thema.setdefault(u["thema_id"], []).append(u["was_neu"])
+        updates_nach_thema.setdefault(u["thema_id"], []).append({"text": u["was_neu"], "datum": u["datum"]})
 
     return [{**t, "updates": updates_nach_thema.get(t["id"], [])} for t in themen]
 
 
-def baue_themen_block(themen: list[dict]) -> str:
+def baue_themen_block(themen: list[dict], mit_daten: bool = False) -> str:
     bloecke = []
     for t in themen:
-        block = f'[ID: {t["id"]}] Thema: {t["titel"]}\nStand: {t["zusammenfassung"] or ""}'
+        titel_zeile = f'[ID: {t["id"]}] Thema: {t["titel"]}'
+        if mit_daten and t.get("erster_kontaktzeitpunkt"):
+            titel_zeile += f' (zuerst erfasst: {str(t["erster_kontaktzeitpunkt"])[:10]})'
+        block = f'{titel_zeile}\nStand: {t["zusammenfassung"] or ""}'
         if t["status"] == "in Verfolgung":
             block += (
                 "\nHinweis: Fortsetzung eines bereits gesendeten Themas - es gibt eine "
                 "wichtige neue Entwicklung."
             )
         if t["updates"]:
-            block += "\nNeue Fakten seitdem:\n" + "\n".join(f"- {u}" for u in t["updates"])
+            zeilen = []
+            for u in t["updates"]:
+                datum_praefix = f'[{str(u["datum"])[:10]}] ' if mit_daten and u.get("datum") else ""
+                zeilen.append(f'- {datum_praefix}{u["text"]}')
+            block += "\nNeue Fakten seitdem:\n" + "\n".join(zeilen)
         bloecke.append(block)
     return "\n\n".join(bloecke)
 
 
-def baue_manuskript_prompt(persona: str, themen_block: str, zusatz_anweisung: str | None) -> str:
+def hole_themen_der_woche(supabase, wochenstart_iso: str) -> list[dict]:
+    """Alle Themen (jeder Status, auch "gesendet") mit erster_kontaktzeitpunkt seit
+    Wochenstart ODER mit mindestens einem Update seit Wochenstart - fuer den
+    Freitags-Wochenrueckblick. Jedes Ergebnis bekommt "updates_diese_woche" (chronologisch)."""
+    neue = (
+        supabase.table("themen")
+        .select("id, titel, zusammenfassung, status, erster_kontaktzeitpunkt")
+        .gte("erster_kontaktzeitpunkt", wochenstart_iso)
+        .execute()
+        .data
+    )
+    updates = (
+        supabase.table("themen_updates")
+        .select("thema_id, was_neu, datum")
+        .gte("datum", wochenstart_iso)
+        .order("datum")
+        .execute()
+        .data
+    )
+
+    themen_nach_id = {t["id"]: t for t in neue}
+    fehlende_ids = {u["thema_id"] for u in updates} - themen_nach_id.keys()
+    if fehlende_ids:
+        nachgeladen = (
+            supabase.table("themen")
+            .select("id, titel, zusammenfassung, status, erster_kontaktzeitpunkt")
+            .in_("id", list(fehlende_ids))
+            .execute()
+            .data
+        )
+        for t in nachgeladen:
+            themen_nach_id[t["id"]] = t
+
+    updates_nach_thema: dict[str, list[dict]] = {}
+    for u in updates:
+        updates_nach_thema.setdefault(u["thema_id"], []).append(u)
+
+    return [
+        {**t, "updates_diese_woche": updates_nach_thema.get(tid, [])}
+        for tid, t in themen_nach_id.items()
+    ]
+
+
+def baue_wochenrueckblick_block(themen_woche: list[dict]) -> str:
+    if not themen_woche:
+        return ""
+    bloecke = []
+    for t in themen_woche:
+        zeilen = [f'Thema: {t["titel"]} (Status: {t["status"]})', f'Ausgangslage: {t.get("zusammenfassung") or ""}']
+        for u in t["updates_diese_woche"]:
+            zeilen.append(f'  - [{str(u["datum"])[:10]}] {u["was_neu"]}')
+        bloecke.append("\n".join(zeilen))
+    return "\n\n".join(bloecke)
+
+
+def baue_format_hinweis(format: str, samstag: str, sonntag: str) -> str:
+    if format == "montag":
+        return (
+            "BESONDERHEIT DIESER FOLGE - MONTAGSFOLGE:\n\n"
+            "Das ist die Montagsfolge. Rahme den Einstieg explizit als "
+            'Wochenend-Rückblick: "Am Wochenende ist einiges passiert, das ihr '
+            'noch nicht gehört habt" oder ähnlich. Die Hörer waren übers '
+            "Wochenende nicht dabei, hol sie ab. Themen oder Updates, die oben "
+            f"mit einem Datum vom {samstag} (Samstag) oder {sonntag} (Sonntag) "
+            "markiert sind, sind vom Wochenende - nutze die für diese Rahmung. "
+            "Sind keine Themen/Updates mit diesen Daten markiert, verzichte auf "
+            "die Wochenend-Rahmung und steig wie gewohnt ein."
+        )
+    if format == "freitag":
+        return (
+            "BESONDERHEIT DIESER FOLGE - FREITAGSFOLGE:\n\n"
+            "Das ist die Freitagsfolge. Wiederhole NICHT einfach die Meldungen "
+            "der Woche. Zeige stattdessen die LINIE: Wie hat sich ein Thema "
+            "über die Woche entwickelt? Was ist das größere Bild, das sich aus "
+            "den einzelnen Meldungen ergibt? Fasse mit Abstand zusammen, nicht "
+            "mit Details.\n\n"
+            "WICHTIG zum WOCHENRÜCKBLICK weiter unten: Das ist Kontext-Material "
+            "für dich, KEIN Themen-Pool für zusätzliche Episoden-Segmente. Baue "
+            "daraus NICHT für jedes dort aufgeführte Thema einen eigenen "
+            "vollwertigen Themenblock mit eigenem Hook, eigenen Detailzahlen "
+            "und eigener Handlungsempfehlung wie bei den regulären Themen oben "
+            "- sonst ist es wieder nur eine Aneinanderreihung von Meldungen. "
+            "Genau eine Ausnahme: Zeigt ein Thema im WOCHENRÜCKBLICK erkennbar "
+            "eine echte Entwicklung über mehrere Tage (z.B. Ankündigung -> "
+            "Reaktion -> Ergebnis), darfst du dafür einen kurzen, komprimierten "
+            "Bogen erzählen (2-4 Sätze, kein eigener Hook, keine "
+            "Handlungsempfehlung, keine Detailzahlen über die Linie hinaus). "
+            "Alle übrigen WOCHENRÜCKBLICK-Themen ohne erkennbare Entwicklung "
+            "über die Woche bekommen höchstens eine beiläufige Erwähnung in "
+            "maximal einem Halbsatz (z.B. als Teil eines Übergangs) oder "
+            "fallen ganz weg."
+        )
+    return ""
+
+
+def baue_manuskript_prompt(
+    persona: str,
+    themen_block: str,
+    zusatz_anweisung: str | None,
+    format_hinweis: str = "",
+    wochenrueckblick_block: str = "",
+) -> str:
+    wochenrueckblick_abschnitt = (
+        f"WOCHENRÜCKBLICK (Kontext zur Einordnung, NICHT einfach nochmal alle Punkte auflisten):\n\n"
+        f"{wochenrueckblick_block}\n\n"
+        if wochenrueckblick_block
+        else ""
+    )
     prompt = (
         f"{persona}\n\n"
         "Erzähle wie eine Geschichte, nicht wie eine Nachrichtenmeldung. Der Hörer "
@@ -122,11 +272,13 @@ def baue_manuskript_prompt(persona: str, themen_block: str, zusatz_anweisung: st
         "sind die aktuell akzeptierten Themen (die [ID: ...]-Markierung ist nur "
         "für dich zur Zuordnung, NICHT vorlesen):\n\n"
         f"{themen_block}\n\n"
+        f"{wochenrueckblick_abschnitt}"
         "THEMENAUSWAHL:\n\n"
         "- Wähle daraus die 5-6 wichtigsten Themen für diese Episode aus. Wenn "
         "mehr als 6 Themen aufgeführt sind, lass die übrigen bewusst weg - nimm "
         "die, die für den Hörer gerade am relevantesten oder aktuellsten sind.\n\n"
-        "LÄNGE:\n\n"
+        + (f"{format_hinweis}\n\n" if format_hinweis else "")
+        + "LÄNGE:\n\n"
         "- Das fertige Manuskript soll 1400-1600 Wörter umfassen. Erreiche das "
         "NICHT durch mehr Themen, sondern durch mehr Tiefe pro Geschichte: ein "
         "zusätzliches konkretes Detail, ein kurzes Beispiel aus der Praxis, oder "
@@ -199,9 +351,16 @@ _IDS_ZEILE = re.compile(r"^VERWENDETE_THEMEN_IDS:\s*(.*)$", re.MULTILINE)
 
 
 def erstelle_manuskript(
-    chat_model, persona: str, themen_block: str, zusatz_anweisung: str | None
+    chat_model,
+    persona: str,
+    themen_block: str,
+    zusatz_anweisung: str | None,
+    format_hinweis: str = "",
+    wochenrueckblick_block: str = "",
 ) -> tuple[str, list[str]]:
-    prompt = baue_manuskript_prompt(persona, themen_block, zusatz_anweisung)
+    prompt = baue_manuskript_prompt(
+        persona, themen_block, zusatz_anweisung, format_hinweis, wochenrueckblick_block
+    )
     antwort = chat_model.generate_content(prompt).text.strip()
 
     treffer = _IDS_ZEILE.search(antwort)
@@ -214,9 +373,14 @@ def erstelle_manuskript(
     return manuskripttext, verwendete_ids
 
 
-def erstelle_episode(zusatz_anweisung: str | None = None) -> dict | None:
+def erstelle_episode(zusatz_anweisung: str | None = None, format: str | None = None) -> dict | None:
     supabase = hole_supabase_client()
     chat_model = hole_chat_model()
+
+    heute = datetime.now(timezone.utc)
+    aktives_format = bestimme_format(format, heute)
+    samstag, sonntag = hole_wochenende_daten(heute)
+    print(f"Format: {aktives_format}.")
 
     persona = hole_moderator_persona(supabase)
 
@@ -230,10 +394,19 @@ def erstelle_episode(zusatz_anweisung: str | None = None) -> dict | None:
         print(f'  - "{t["titel"]}" (Status: {t["status"]}, {len(t["updates"])} Update(s))')
     print()
 
-    themen_block = baue_themen_block(themen)
+    themen_block = baue_themen_block(themen, mit_daten=(aktives_format == "montag"))
+
+    wochenrueckblick_block = ""
+    if aktives_format == "freitag":
+        wochenstart_iso = hole_wochenstart(heute).isoformat()
+        themen_woche = hole_themen_der_woche(supabase, wochenstart_iso)
+        wochenrueckblick_block = baue_wochenrueckblick_block(themen_woche)
+
+    format_hinweis = baue_format_hinweis(aktives_format, samstag, sonntag)
+
     print("Erzeuge Manuskript...")
     manuskripttext, verwendete_ids = erstelle_manuskript(
-        chat_model, persona, themen_block, zusatz_anweisung
+        chat_model, persona, themen_block, zusatz_anweisung, format_hinweis, wochenrueckblick_block
     )
     print(f"-> Manuskript erzeugt ({len(manuskripttext)} Zeichen).\n")
 
@@ -398,5 +571,13 @@ def pruefe_manuskript(episode_id: str, manuskripttext: str, themen: list[dict]) 
 
 
 if __name__ == "__main__":
-    zusatz_anweisung = sys.argv[1] if len(sys.argv) > 1 else None
-    erstelle_episode(zusatz_anweisung)
+    format_override = None
+    rest_argumente = []
+    for arg in sys.argv[1:]:
+        if arg.startswith("format="):
+            format_override = arg.split("=", 1)[1]
+        else:
+            rest_argumente.append(arg)
+
+    zusatz_anweisung = rest_argumente[0] if rest_argumente else None
+    erstelle_episode(zusatz_anweisung, format=format_override)

@@ -14,14 +14,17 @@ Drei unabhängig aufrufbare Funktionen:
 3. fuehre_redaktion_aus(zusatz_anweisung=None)
    Lässt den aktiven Redaktions-Agenten (rolle='redaktion') über alle
    offenen Vorschläge aus "agent_vorschlaege" entscheiden und legt
-   Entscheidungen in "redaktion_entscheidungen" an. Prüft danach zusätzlich
-   alle neuen Einträge aus "themen_updates", deren zugehöriges Thema bereits
-   den Status "gesendet" hat: Gemini entscheidet, ob das Update wichtig genug
-   ist, um das Thema erneut aufzugreifen. Falls ja, wird der Status des
-   Themas zurück auf "in Verfolgung" gesetzt und die Entscheidung in
+   Entscheidungen in "redaktion_entscheidungen" an.
+
+4. pruefe_update_reaktivierung(zusatz_anweisung=None)
+   Prüft mit demselben aktiven Redaktions-Agenten alle neuen Einträge aus
+   "themen_updates", deren zugehöriges Thema bereits den Status "gesendet"
+   hat: Gemini entscheidet, ob das Update wichtig genug ist, um das Thema
+   erneut aufzugreifen. Falls ja, wird der Status des Themas zurück auf
+   "in Verfolgung" gesetzt und die Entscheidung in
    "redaktion_update_entscheidungen" dokumentiert.
 
-4. verarbeite_akzeptierte_entscheidungen()
+5. verarbeite_akzeptierte_entscheidungen()
    Holt alle akzeptierten, noch nicht verknüpften Entscheidungen aus
    "redaktion_entscheidungen" (thema_id IS NULL), lässt die Rohnachricht
    über die bestehende Logik aus verarbeite_rohnachricht.py einem Thema
@@ -559,24 +562,43 @@ def fuehre_einzelnen_agenten_aus(agent_name: str, zusatz_anweisung: str | None =
         fuehre_recherche_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung)
 
 
-def fuehre_redaktion_aus(zusatz_anweisung: str | None = None) -> None:
-    """Lässt den aktiven Redaktions-Agenten über alle offenen Vorschläge entscheiden."""
-    supabase = hole_supabase_client()
-    chat_model = hole_chat_model()
-
+def hole_aktiven_redaktionsagenten(supabase) -> dict | None:
+    """Findet den aktiven Redaktions-Agenten; warnt und nimmt den ersten, falls mehrere aktiv sind."""
     agenten = hole_aktive_agenten(supabase, rolle="redaktion")
     if not agenten:
-        print("Kein aktiver Redaktions-Agent gefunden.")
-        return
+        return None
     if len(agenten) > 1:
         print(
             f'Warnung: {len(agenten)} aktive Redaktions-Agenten gefunden, '
             f'nutze den ersten: "{agenten[0]["name"]}".'
         )
+    return agenten[0]
 
-    agent = agenten[0]
+
+def fuehre_redaktion_aus(zusatz_anweisung: str | None = None) -> None:
+    """Lässt den aktiven Redaktions-Agenten über alle offenen Vorschläge entscheiden."""
+    supabase = hole_supabase_client()
+    chat_model = hole_chat_model()
+
+    agent = hole_aktiven_redaktionsagenten(supabase)
+    if agent is None:
+        print("Kein aktiver Redaktions-Agent gefunden.")
+        return
+
     fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung)
-    pruefe_updates_zu_gesendeten_themen(supabase, chat_model, agent, zusatz_anweisung)
+
+
+def pruefe_update_reaktivierung(zusatz_anweisung: str | None = None) -> int:
+    """Lässt den aktiven Redaktions-Agenten prüfen, ob neue Updates zu bereits gesendeten Themen wichtig genug sind, um das Thema erneut aufzugreifen."""
+    supabase = hole_supabase_client()
+    chat_model = hole_chat_model()
+
+    agent = hole_aktiven_redaktionsagenten(supabase)
+    if agent is None:
+        print("Kein aktiver Redaktions-Agent gefunden.")
+        return 0
+
+    return pruefe_updates_zu_gesendeten_themen(supabase, chat_model, agent, zusatz_anweisung)
 
 
 def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:
@@ -695,6 +717,8 @@ if __name__ == "__main__":
         fuehre_recherche_agenten_aus()
     elif befehl == "redaktion":
         fuehre_redaktion_aus()
+    elif befehl == "update_reaktivierung":
+        pruefe_update_reaktivierung()
     elif befehl == "verarbeite":
         verarbeite_akzeptierte_entscheidungen()
     elif befehl == "agent":
@@ -703,4 +727,7 @@ if __name__ == "__main__":
         else:
             fuehre_einzelnen_agenten_aus(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     else:
-        print(f'Unbekannter Befehl: "{befehl}". Nutze "recherche", "redaktion", "verarbeite" oder "agent".')
+        print(
+            f'Unbekannter Befehl: "{befehl}". Nutze "recherche", "redaktion", '
+            '"update_reaktivierung", "verarbeite" oder "agent".'
+        )

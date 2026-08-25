@@ -3,20 +3,24 @@
 Reihenfolge:
 1. rss_einlesen.main()                                    - neue Rohnachrichten holen
 2. recherche_und_redaktion.fuehre_recherche_agenten_aus()  - Vorschläge sammeln
-3. recherche_und_redaktion.fuehre_redaktion_aus()          - Vorschläge/Updates entscheiden
+3. recherche_und_redaktion.fuehre_redaktion_aus()          - Vorschläge entscheiden
 4. recherche_und_redaktion.verarbeite_akzeptierte_entscheidungen() - Themen anlegen/updaten
-5. generiere_episode.erstelle_episode()                    - Manuskript schreiben
-6. generiere_episode.pruefe_manuskript()                   - Faktencheck gegen Original-Quellen
-7. generiere_audio.text_zu_audio()                         - Audio erzeugen (Deepgram)
+5. recherche_und_redaktion.pruefe_update_reaktivierung()   - Updates zu gesendeten Themen prüfen
+6. generiere_episode.erstelle_episode()                    - Manuskript schreiben
+7. generiere_episode.pruefe_manuskript()                   - Faktencheck gegen Original-Quellen
+8. generiere_audio.text_zu_audio()                         - Audio erzeugen (Deepgram)
 
 Jeder Schritt läuft in einem eigenen try/except: schlägt einer fehl (Exception,
 API-Fehler wie 429 o.ä.), wird das deutlich geloggt, aber die Kette läuft mit
-dem nächsten Schritt weiter. Schritt 6 (Faktencheck) läuft nur, wenn Schritt 5
-tatsächlich eine Episode mit Manuskripttext geliefert hat. Schritt 7 (Audio)
-läuft nur, wenn Schritt 6 erfolgreich war UND keinen Widerspruch gefunden hat -
-sonst wird die Episode NICHT automatisch vertont (Status in "episoden" bleibt
-"ungeprueft"/schlägt fehl bzw. wird auf "pruefung_fehlgeschlagen" gesetzt,
-siehe Migration 20260825080000_episoden_faktencheck.sql).
+dem nächsten Schritt weiter. Schritt 5 (Update-Reaktivierung) läuft bewusst
+NACH Schritt 4, damit auch Updates berücksichtigt werden, die im selben Lauf
+durch Schritt 4 selbst entstehen. Schritt 7 (Faktencheck) läuft nur, wenn
+Schritt 6 tatsächlich eine Episode mit Manuskripttext geliefert hat. Schritt 8
+(Audio) läuft nur, wenn Schritt 7 erfolgreich war UND keinen Widerspruch
+gefunden hat - sonst wird die Episode NICHT automatisch vertont (Status in
+"episoden" bleibt "ungeprueft"/schlägt fehl bzw. wird auf
+"pruefung_fehlgeschlagen" gesetzt, siehe Migration
+20260825080000_episoden_faktencheck.sql).
 
 Am Ende wird eine Zusammenfassung ausgegeben und ein Protokoll-Eintrag
 (Gesamtlaufzeit, Erfolgsstatus, Fehlerdetails) in der Tabelle
@@ -129,6 +133,12 @@ def formatiere_verarbeitung(ergebnisse: list[dict] | None) -> str:
     return f"{len(ergebnisse)} verarbeitet ({neu} neu, {updates} Updates, {duplikate} Duplikate)"
 
 
+def formatiere_update_reaktivierung(anzahl: int | None) -> str:
+    if not anzahl:
+        return "keine neuen Updates zu bereits gesendeten Themen"
+    return f"{anzahl} Update-Entscheidung(en) geprüft"
+
+
 def formatiere_episode(episode: dict | None) -> str:
     if episode is None:
         return "keine offenen Themen, keine Episode erzeugt"
@@ -193,63 +203,73 @@ def main() -> None:
     gesamt_start = time.monotonic()
     schritte: list[dict] = []
 
-    schritte.append(fuehre_schritt_aus("1/7 RSS-Feeds einlesen", rss_einlesen.main))
+    schritte.append(fuehre_schritt_aus("1/8 RSS-Feeds einlesen", rss_einlesen.main))
 
     schritte.append(
         fuehre_schritt_aus(
-            "2/7 Recherche-Agenten ausführen",
+            "2/8 Recherche-Agenten ausführen",
             recherche_und_redaktion.fuehre_recherche_agenten_aus,
         )
     )
 
     schritte.append(
         fuehre_schritt_aus(
-            "3/7 Redaktion ausführen",
+            "3/8 Redaktion ausführen",
             recherche_und_redaktion.fuehre_redaktion_aus,
         )
     )
 
     schritte.append(
         fuehre_schritt_aus(
-            "4/7 Akzeptierte Entscheidungen verarbeiten",
+            "4/8 Akzeptierte Entscheidungen verarbeiten",
             recherche_und_redaktion.verarbeite_akzeptierte_entscheidungen,
             formatiere_verarbeitung,
         )
     )
 
-    schritt_5 = fuehre_schritt_aus(
-        "5/7 Manuskript erzeugen",
+    schritte.append(
+        fuehre_schritt_aus(
+            "5/8 Update-Reaktivierung prüfen",
+            recherche_und_redaktion.pruefe_update_reaktivierung,
+            formatiere_update_reaktivierung,
+        )
+    )
+
+    schritt_manuskript = fuehre_schritt_aus(
+        "6/8 Manuskript erzeugen",
         generiere_episode.erstelle_episode,
         formatiere_episode,
     )
-    schritte.append(schritt_5)
+    schritte.append(schritt_manuskript)
 
-    episode = schritt_5["ergebnis"]
-    if schritt_5["status"] != "erfolgreich":
-        schritt_6 = markiere_uebersprungen("6/7 Faktencheck", "Schritt 5 ist fehlgeschlagen")
+    episode = schritt_manuskript["ergebnis"]
+    if schritt_manuskript["status"] != "erfolgreich":
+        schritt_faktencheck = markiere_uebersprungen("7/8 Faktencheck", "Schritt 6 ist fehlgeschlagen")
     elif episode is None:
-        schritt_6 = markiere_uebersprungen("6/7 Faktencheck", "kein Manuskript erzeugt (keine offenen Themen)")
+        schritt_faktencheck = markiere_uebersprungen(
+            "7/8 Faktencheck", "kein Manuskript erzeugt (keine offenen Themen)"
+        )
     else:
-        schritt_6 = fuehre_schritt_aus(
-            "6/7 Faktencheck",
+        schritt_faktencheck = fuehre_schritt_aus(
+            "7/8 Faktencheck",
             lambda: generiere_episode.pruefe_manuskript(
                 episode["id"], episode["manuskripttext"], episode["verwendete_themen"]
             ),
             formatiere_faktencheck,
         )
-    schritte.append(schritt_6)
+    schritte.append(schritt_faktencheck)
 
-    faktencheck_ergebnis = schritt_6["ergebnis"]
-    if schritt_5["status"] != "erfolgreich":
-        schritte.append(markiere_uebersprungen("7/7 Audio erzeugen", "Schritt 5 ist fehlgeschlagen"))
+    faktencheck_ergebnis = schritt_faktencheck["ergebnis"]
+    if schritt_manuskript["status"] != "erfolgreich":
+        schritte.append(markiere_uebersprungen("8/8 Audio erzeugen", "Schritt 6 ist fehlgeschlagen"))
     elif episode is None:
-        schritte.append(markiere_uebersprungen("7/7 Audio erzeugen", "kein Manuskript erzeugt (keine offenen Themen)"))
-    elif schritt_6["status"] != "erfolgreich":
-        schritte.append(markiere_uebersprungen("7/7 Audio erzeugen", "Faktencheck fehlgeschlagen"))
+        schritte.append(markiere_uebersprungen("8/8 Audio erzeugen", "kein Manuskript erzeugt (keine offenen Themen)"))
+    elif schritt_faktencheck["status"] != "erfolgreich":
+        schritte.append(markiere_uebersprungen("8/8 Audio erzeugen", "Faktencheck fehlgeschlagen"))
     elif faktencheck_ergebnis["widerspruch"] > 0:
         schritte.append(
             markiere_uebersprungen(
-                "7/7 Audio erzeugen",
+                "8/8 Audio erzeugen",
                 f'Faktencheck hat {faktencheck_ergebnis["widerspruch"]} Widerspruch/Widersprüche '
                 "gefunden - Episode nicht freigegeben",
             )
@@ -257,7 +277,7 @@ def main() -> None:
     else:
         schritte.append(
             fuehre_schritt_aus(
-                "7/7 Audio erzeugen",
+                "8/8 Audio erzeugen",
                 lambda: erzeuge_audio_fuer_episode(episode),
                 formatiere_audio,
             )

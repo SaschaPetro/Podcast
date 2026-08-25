@@ -80,7 +80,7 @@ Aktuell ein Agent: **Redaktion KMU** (fokus: Perspektive eines Geschäftsführer
 
 **Ändern:** Table Editor → `agenten_konfiguration` → Zeile mit `name = 'Redaktion KMU'` → `fokus_beschreibung` bearbeiten. Beispiel: Um strenger zu selektieren, im Fokus-Text ergänzen "Lehne alles ab, was nicht in den nächsten 4 Wochen praktisch relevant ist."
 
-**Update-Check für bereits gesendete Themen:** Nach der normalen Vorschlags-Bewertung prüft derselbe Redaktions-Agent zusätzlich alle neuen Einträge in `themen_updates`, deren Thema bereits den Status "gesendet" hat (`pruefe_updates_zu_gesendeten_themen`). Für jedes Update entscheidet Gemini mit Begründung, ob es wichtig genug ist, das Thema erneut aufzugreifen (z.B. "Fall wurde final entschieden" ja, "Verzögerung um zwei Tage" eher nicht). Bei Ja wird der Themen-Status zurück auf "in Verfolgung" gesetzt; die Entscheidung landet in jedem Fall (auch bei Nein) in `redaktion_update_entscheidungen`. Der Moderator merkt bei so wiederaufgenommenen Themen im Manuskript kurz an, dass es sich um eine Fortsetzung handelt (siehe Abschnitt 6).
+**Update-Check für bereits gesendete Themen:** Als eigener Pipeline-Schritt (`pruefe_update_reaktivierung()` in `recherche_und_redaktion.py`, Schritt 5/8 in `morgenlauf.py` - siehe Abschnitt 7) prüft derselbe Redaktions-Agent alle neuen Einträge in `themen_updates`, deren Thema bereits den Status "gesendet" hat. Für jedes Update entscheidet Gemini mit Begründung, ob es wichtig genug ist, das Thema erneut aufzugreifen (z.B. "Fall wurde final entschieden" ja, "Verzögerung um zwei Tage" eher nicht). Bei Ja wird der Themen-Status zurück auf "in Verfolgung" gesetzt; die Entscheidung landet in jedem Fall (auch bei Nein) in `redaktion_update_entscheidungen`. Der Moderator merkt bei so wiederaufgenommenen Themen im Manuskript kurz an, dass es sich um eine Fortsetzung handelt (siehe Abschnitt 6).
 
 **Einzeln testen:**
 
@@ -92,6 +92,16 @@ fuehre_einzelnen_agenten_aus(
     "Sei diesmal strenger - nur Themen mit akutem Handlungsbedarf akzeptieren."
 )
 ```
+
+Der Update-Check läuft separat über eine eigene Funktion (kein Teil von `fuehre_einzelnen_agenten_aus`):
+
+```python
+from recherche_und_redaktion import pruefe_update_reaktivierung
+
+pruefe_update_reaktivierung()
+```
+
+Oder über die Kommandozeile: `python recherche_und_redaktion.py update_reaktivierung`
 
 ### Moderator (`rolle = 'moderator'`)
 
@@ -137,7 +147,7 @@ Es gibt aktuell **keinen** `fuehre_einzelnen_agenten_aus`-Test für den Moderato
    - Gibt es einen Treffer: Gemini prüft, ob der neue Text einen konkreten neuen Fakt enthält → entweder Eintrag in `themen_updates` (Update) oder Verwerfen als Duplikat (nur Verknüpfung, kein neuer Inhalt)
    - Kein Treffer: neues Thema in `themen` mit Status `neu`
 5. **Finale Manuskript-Auswahl:** `generiere_episode.py` holt alle Themen mit Status `neu` oder `in Verfolgung` (unabhängig davon, wie sie entstanden sind) und lässt den Moderator-Agenten daraus die 5-6 wichtigsten für die aktuelle Folge auswählen (Abschnitt "THEMENAUSWAHL" im Prompt, siehe Abschnitt 6). Nur die vom Moderator tatsächlich verwendeten Themen werden danach auf Status `gesendet` gesetzt; die übrigen bleiben offen für die nächste Folge.
-6. **Update-Check nach dem Senden:** Kommt zu einem bereits gesendeten Thema (`themen.status = 'gesendet'`) später ein neues Update in `themen_updates` hinzu, prüft der Redaktions-Agent bei seinem nächsten Lauf, ob das Update wichtig genug ist, um das Thema zurück auf `in Verfolgung` zu setzen - und damit erneut für die Manuskript-Auswahl (Schritt 5) in Frage kommt (siehe Abschnitt 3).
+6. **Update-Check nach dem Senden:** Kommt zu einem bereits gesendeten Thema (`themen.status = 'gesendet'`) später ein neues Update in `themen_updates` hinzu, prüft der Redaktions-Agent über `pruefe_update_reaktivierung()` bei jedem Lauf, ob das Update wichtig genug ist, um das Thema zurück auf `in Verfolgung` zu setzen - und damit erneut für die Manuskript-Auswahl (Schritt 5) in Frage kommt (siehe Abschnitt 3).
 7. **Faktencheck vor der Veröffentlichung:** `pruefe_manuskript()` in `generiere_episode.py` sammelt für jedes tatsächlich verwendete Thema die verknüpften Original-Rohnachrichten (über `redaktion_entscheidungen` -> `agent_vorschlaege` -> `rohnachrichten`) und lässt Gemini jede konkrete Zahl, jeden Eigennamen und jede Datumsangabe im Manuskript dagegen prüfen. Ergebnis (`bestaetigt`/`widerspruch`/`nicht_belegt` je Behauptung) landet in `episoden.faktencheck_ergebnis`, der Episoden-`status` wird auf `freigegeben` oder `pruefung_fehlgeschlagen` gesetzt. Bei mindestens einem `widerspruch` überspringt `morgenlauf.py` die Audio-Erzeugung (Schritt 7) - die Episode bleibt unvertont, bis sie manuell geprüft wurde. Ein `nicht_belegt` blockiert nichts automatisch (kann ein bewusst erfundenes Storytelling-Beispiel sein).
 
 ## 6. Wie man den Manuskript-Stil ändert
@@ -186,6 +196,7 @@ python rss_einlesen.py
 python recherche_und_redaktion.py recherche
 python recherche_und_redaktion.py redaktion
 python recherche_und_redaktion.py verarbeite
+python recherche_und_redaktion.py update_reaktivierung
 python generiere_episode.py
 ```
 
@@ -219,7 +230,7 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 - **Deepgram hat ein Limit von 2000 Zeichen pro Anfrage.** Längere Manuskripte werden automatisch an Satzgrenzen in Chunks aufgeteilt (`_teile_text`) und die Audio-Teile zusammengefügt.
 - **ElevenLabs-Kontingent ist begrenzt** - für finale/echte Aufnahmen aufheben, für Tests Deepgram (Standard-Anbieter) nutzen.
 - **`google.generativeai` (Python-Paket) ist deprecated** (Gemini-Team empfiehlt Umstieg auf `google.genai`) - erzeugt aktuell bei jedem Lauf eine `FutureWarning`, funktioniert aber noch.
-- **Kein zentrales Orchestrierungsskript** - der komplette Ablauf von RSS bis Audio muss aktuell manuell Schritt für Schritt gestartet werden (siehe Abschnitt 7).
+- **Kein Scheduler/Cron** - `morgenlauf.py` bündelt den kompletten Ablauf von RSS bis Audio in einem Skript (siehe Abschnitt "Reihenfolge" oben im Docstring der Datei), muss aber weiterhin manuell gestartet werden (`python morgenlauf.py`); es gibt aktuell keinen automatischen/zeitgesteuerten Trigger.
 - **Themen-Markierung ist konservativ:** Liefert die Moderator-KI keine gültige `VERWENDETE_THEMEN_IDS`-Zeile, wird sicherheitshalber **kein** Thema als "gesendet" markiert (Warnung in der Konsole) - besser als fälschlich Themen zu verlieren, kann aber dazu führen, dass Themen manuell nachgepflegt werden müssen.
 - **`episoden.kosten` wird aktuell nirgends befüllt** - keine Kostenerfassung pro Episode implementiert.
 - **`themen.quelle` wird aktuell nirgends befüllt.**

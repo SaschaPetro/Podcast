@@ -26,12 +26,14 @@ flowchart TD
     THE -->|generiere_episode.py| MOD["Moderator-Agent<br/>Podcast-Moderator"]
     MOD -->|"wählt 5-6 Themen,<br/>schreibt Manuskript"| EP[("episoden<br/>manuskripttext")]
 
-    EP -->|generiere_audio.py| TTS["Text-to-Speech<br/>Deepgram / ElevenLabs"]
+    EP -->|"pruefe_manuskript()<br/>gegen Original-Quellen"| FC{"Faktencheck<br/>Widerspruch?"}
+    FC -->|nein: freigegeben| TTS["Text-to-Speech<br/>Deepgram / ElevenLabs"]
+    FC -->|ja: pruefung_fehlgeschlagen| STOP["Audio übersprungen,<br/>manuelle Prüfung nötig"]
     TTS --> MP3["output/episode_&lt;id&gt;.mp3"]
     MP3 -.->|audio_pfad| EP
 ```
 
-**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat). Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt das Manuskript. Zuletzt wird daraus eine MP3 erzeugt.
+**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat). Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt das Manuskript. Bevor daraus Audio erzeugt wird, prüft ein Faktencheck-Schritt das Manuskript gegen die Original-Quellen; nur bei Freigabe wird die MP3 erzeugt.
 
 ## 3. Die KI-Agenten
 
@@ -120,7 +122,7 @@ Es gibt aktuell **keinen** `fuehre_einzelnen_agenten_aus`-Test für den Moderato
 | `themen` | Konsolidierte Themen (nach Dedup) | `titel`, `zusammenfassung`, `status` (neu / in Verfolgung / gesendet), `erster_kontaktzeitpunkt`, `letztes_update`, `embedding` (vector(768), Gemini) | - |
 | `themen_updates` | Historie neuer Fakten zu einem bestehenden Thema | `thema_id`, `was_neu`, `datum` | `thema_id` → `themen.id` (cascade delete) |
 | `redaktion_update_entscheidungen` | Redaktions-Entscheidungen über Updates zu bereits gesendeten Themen | `update_id`, `thema_id`, `wieder_aufgenommen`, `begruendung`, `entschieden_am` | `update_id` → `themen_updates.id`; `thema_id` → `themen.id` (cascade delete) |
-| `episoden` | Fertige Episoden | `datum`, `manuskripttext`, `audio_pfad`, `kosten` (aktuell nirgends befüllt) | - |
+| `episoden` | Fertige Episoden | `datum`, `manuskripttext`, `audio_pfad`, `kosten` (aktuell nirgends befüllt), `status` (`ungeprueft`/`freigegeben`/`pruefung_fehlgeschlagen`), `faktencheck_ergebnis` (jsonb: Zähler + Detail-Liste) | - |
 
 Ähnlichkeitssuche für Dedup läuft über die SQL-Funktion `finde_aehnliche_themen(such_embedding, schwellenwert)` (Cosine Similarity via `pgvector`/HNSW-Index auf `themen.embedding`).
 
@@ -136,6 +138,7 @@ Es gibt aktuell **keinen** `fuehre_einzelnen_agenten_aus`-Test für den Moderato
    - Kein Treffer: neues Thema in `themen` mit Status `neu`
 5. **Finale Manuskript-Auswahl:** `generiere_episode.py` holt alle Themen mit Status `neu` oder `in Verfolgung` (unabhängig davon, wie sie entstanden sind) und lässt den Moderator-Agenten daraus die 5-6 wichtigsten für die aktuelle Folge auswählen (Abschnitt "THEMENAUSWAHL" im Prompt, siehe Abschnitt 6). Nur die vom Moderator tatsächlich verwendeten Themen werden danach auf Status `gesendet` gesetzt; die übrigen bleiben offen für die nächste Folge.
 6. **Update-Check nach dem Senden:** Kommt zu einem bereits gesendeten Thema (`themen.status = 'gesendet'`) später ein neues Update in `themen_updates` hinzu, prüft der Redaktions-Agent bei seinem nächsten Lauf, ob das Update wichtig genug ist, um das Thema zurück auf `in Verfolgung` zu setzen - und damit erneut für die Manuskript-Auswahl (Schritt 5) in Frage kommt (siehe Abschnitt 3).
+7. **Faktencheck vor der Veröffentlichung:** `pruefe_manuskript()` in `generiere_episode.py` sammelt für jedes tatsächlich verwendete Thema die verknüpften Original-Rohnachrichten (über `redaktion_entscheidungen` -> `agent_vorschlaege` -> `rohnachrichten`) und lässt Gemini jede konkrete Zahl, jeden Eigennamen und jede Datumsangabe im Manuskript dagegen prüfen. Ergebnis (`bestaetigt`/`widerspruch`/`nicht_belegt` je Behauptung) landet in `episoden.faktencheck_ergebnis`, der Episoden-`status` wird auf `freigegeben` oder `pruefung_fehlgeschlagen` gesetzt. Bei mindestens einem `widerspruch` überspringt `morgenlauf.py` die Audio-Erzeugung (Schritt 7) - die Episode bleibt unvertont, bis sie manuell geprüft wurde. Ein `nicht_belegt` blockiert nichts automatisch (kann ein bewusst erfundenes Storytelling-Beispiel sein).
 
 ## 6. Wie man den Manuskript-Stil ändert
 
@@ -242,6 +245,7 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 | Wie ähnlich zwei Nachrichten sein müssen, um als "gleiches Thema" zu gelten | `SCHWELLENWERT` (aktuell 0.85) | `verarbeite_rohnachricht.py` |
 | Wie alt Nachrichten maximal sein dürfen | `MAX_ALTER_TAGE` | `rss_einlesen.py` bzw. `recherche_und_redaktion.py` |
 | Sprechgeschwindigkeit der Audiodatei | `DEEPGRAM_SPEED_STANDARD` | `generiere_audio.py` (wirkt nur bei englischen Stimmen) |
+| Wie streng der Faktencheck prüft | Prompt-Text in `baue_faktencheck_prompt` | `generiere_episode.py` |
 | Welches Gemini-Modell für Text/Redaktion verwendet wird | `GEMINI_MODEL_NAME` | `.env` |
 
 ---

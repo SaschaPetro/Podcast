@@ -5,15 +5,27 @@ Die Moderator-Persona (Ton, Zielgruppe, Stil) wird aus "agenten_konfiguration"
 geholt (rolle="moderator") und bildet die Hauptgrundlage für den
 Gemini-Prompt.
 
-Eine unabhängig aufrufbare Funktion:
+Zwei unabhängig aufrufbare Funktionen:
 
 1. erstelle_episode(zusatz_anweisung=None)
    Holt die aktive Moderator-Persona sowie alle Themen mit Status "neu" oder
    "in Verfolgung" samt ihren bisherigen Updates aus "themen_updates", lässt
    Gemini daraus im Ton dieser Persona ein Manuskript schreiben, speichert es
    in "episoden" und markiert die verwendeten Themen als "gesendet", damit sie
-   nicht in der nächsten Episode erneut auftauchen.
+   nicht in der nächsten Episode erneut auftauchen. Der Rückgabewert enthält
+   zusätzlich "verwendete_themen" (id/titel/zusammenfassung der tatsächlich
+   verwendeten Themen) für den nachfolgenden Faktencheck.
+
+2. pruefe_manuskript(episode_id, manuskripttext, themen)
+   Sammelt für jedes übergebene Thema die verknüpften Original-Rohnachrichten
+   (über redaktion_entscheidungen -> agent_vorschlaege -> rohnachrichten) als
+   Quellenbasis, lässt Gemini jede konkrete Zahl/Namen/Datumsangabe im
+   Manuskript dagegen prüfen und speichert Ergebnis + Status ("freigegeben"
+   oder "pruefung_fehlgeschlagen" bei mind. einem Widerspruch) direkt in der
+   episoden-Zeile. Voraussetzung: Migration
+   20260825080000_episoden_faktencheck.sql muss angewendet sein.
 """
+import json
 import os
 import re
 import sys
@@ -248,7 +260,141 @@ def erstelle_episode(zusatz_anweisung: str | None = None) -> dict | None:
         ).execute()
         print(f"-> {len(gueltige_ids)} Thema/Themen als 'gesendet' markiert.\n")
 
+    themen_nach_id = {t["id"]: t for t in themen}
+    episode["verwendete_themen"] = [themen_nach_id[tid] for tid in gueltige_ids]
+
     return episode
+
+
+def hole_quellen_fuer_themen(supabase, thema_ids: list[str]) -> dict[str, list[dict]]:
+    """Sammelt für jede thema_id die verknüpften Original-Rohnachrichten über
+    redaktion_entscheidungen -> agent_vorschlaege -> rohnachrichten."""
+    quellen_nach_thema: dict[str, list[dict]] = {tid: [] for tid in thema_ids}
+    if not thema_ids:
+        return quellen_nach_thema
+
+    entscheidungen = (
+        supabase.table("redaktion_entscheidungen")
+        .select("thema_id, vorschlag_id")
+        .in_("thema_id", thema_ids)
+        .execute()
+        .data
+    )
+    if not entscheidungen:
+        return quellen_nach_thema
+
+    vorschlag_ids = list({e["vorschlag_id"] for e in entscheidungen if e["vorschlag_id"]})
+    vorschlaege = (
+        supabase.table("agent_vorschlaege")
+        .select("id, rohnachricht_id")
+        .in_("id", vorschlag_ids)
+        .execute()
+        .data
+        if vorschlag_ids
+        else []
+    )
+    rohnachricht_id_nach_vorschlag = {v["id"]: v["rohnachricht_id"] for v in vorschlaege}
+
+    rohnachricht_ids = list({rid for rid in rohnachricht_id_nach_vorschlag.values() if rid})
+    rohnachrichten = (
+        supabase.table("rohnachrichten")
+        .select("id, titel, text")
+        .in_("id", rohnachricht_ids)
+        .execute()
+        .data
+        if rohnachricht_ids
+        else []
+    )
+    rohnachricht_nach_id = {r["id"]: r for r in rohnachrichten}
+
+    gesehen: set[tuple[str, str]] = set()
+    for e in entscheidungen:
+        thema_id = e["thema_id"]
+        rohnachricht = rohnachricht_nach_id.get(rohnachricht_id_nach_vorschlag.get(e["vorschlag_id"]))
+        if not rohnachricht or thema_id not in quellen_nach_thema:
+            continue
+        schluessel = (thema_id, rohnachricht["id"])
+        if schluessel in gesehen:
+            continue
+        gesehen.add(schluessel)
+        quellen_nach_thema[thema_id].append(rohnachricht)
+
+    return quellen_nach_thema
+
+
+def baue_quellen_block(themen: list[dict], quellen_nach_thema: dict[str, list[dict]]) -> str:
+    bloecke = []
+    for t in themen:
+        quellen = quellen_nach_thema.get(t["id"], [])
+        if quellen:
+            quellentext = "\n\n".join(f'Quelle "{q["titel"]}":\n{q["text"]}' for q in quellen)
+        else:
+            quellentext = t.get("zusammenfassung") or "(keine Quelle gefunden)"
+        bloecke.append(f'=== Thema: {t["titel"]} ===\n{quellentext}')
+    return "\n\n".join(bloecke)
+
+
+def baue_faktencheck_prompt(manuskripttext: str, quellen_block: str) -> str:
+    return (
+        "Du bist Fakten-Checker für einen Podcast. Prüfe jede konkrete Zahl, "
+        "jeden Eigennamen (Personen, Firmen, Produkte) und jede Datumsangabe im "
+        "folgenden Manuskript gegen die beigefügten Original-Quellen.\n\n"
+        "Für jede solche konkrete Behauptung entscheide:\n"
+        '- "bestaetigt": steht so oder so ähnlich in den Quellen\n'
+        '- "widerspruch": widerspricht den Quellen (z.B. andere Zahl, anderer Name, '
+        "anderes Datum)\n"
+        '- "nicht_belegt": lässt sich in den Quellen nicht finden (kann ein bewusst '
+        "erfundenes Beispiel/Szenario im Storytelling sein, nicht zwingend ein Fehler)\n\n"
+        "Ignoriere reine Stilmittel, erfundene Alltagsszenarien/Beispiele, die klar "
+        "illustrativ sind und keine konkrete Zahl/keinen Namen/kein Datum enthalten, "
+        "sowie Meinungs- oder Humor-Passagen des Moderators.\n\n"
+        f"QUELLEN:\n{quellen_block}\n\n"
+        f"MANUSKRIPT:\n{manuskripttext}\n\n"
+        "Antworte NUR mit einer JSON-Liste, jedes Element in diesem Format:\n"
+        '{"behauptung": string, "status": "bestaetigt"|"widerspruch"|"nicht_belegt", '
+        '"quelle_thema": string}'
+    )
+
+
+def pruefe_manuskript(episode_id: str, manuskripttext: str, themen: list[dict]) -> dict:
+    supabase = hole_supabase_client()
+    chat_model = hole_chat_model()
+
+    thema_ids = [t["id"] for t in themen]
+    quellen_nach_thema = hole_quellen_fuer_themen(supabase, thema_ids)
+    quellen_block = baue_quellen_block(themen, quellen_nach_thema)
+
+    prompt = baue_faktencheck_prompt(manuskripttext, quellen_block)
+    antwort = chat_model.generate_content(
+        prompt, generation_config={"response_mime_type": "application/json"}
+    )
+    details = json.loads(antwort.text)
+
+    zaehler = {"bestaetigt": 0, "widerspruch": 0, "nicht_belegt": 0}
+    for d in details:
+        status = d.get("status")
+        if status not in zaehler:
+            continue
+        zaehler[status] += 1
+        if status == "widerspruch":
+            print(f'  WIDERSPRUCH: "{d.get("behauptung")}" (Thema: {d.get("quelle_thema")})')
+        elif status == "nicht_belegt":
+            print(f'  nicht belegt: "{d.get("behauptung")}" (Thema: {d.get("quelle_thema")})')
+
+    ergebnis = {**zaehler, "details": details}
+    neuer_status = "pruefung_fehlgeschlagen" if zaehler["widerspruch"] > 0 else "freigegeben"
+
+    supabase.table("episoden").update(
+        {"faktencheck_ergebnis": ergebnis, "status": neuer_status}
+    ).eq("id", episode_id).execute()
+
+    print(
+        f'-> Faktencheck: {zaehler["bestaetigt"]} bestätigt, {zaehler["widerspruch"]} '
+        f'Widerspruch/Widersprüche, {zaehler["nicht_belegt"]} nicht belegt -> '
+        f'Status "{neuer_status}".\n'
+    )
+
+    return ergebnis
 
 
 if __name__ == "__main__":

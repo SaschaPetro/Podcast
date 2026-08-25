@@ -9,6 +9,7 @@ Reihenfolge:
 6. generiere_episode.erstelle_episode()                    - Manuskript schreiben
 7. generiere_episode.pruefe_manuskript()                   - Faktencheck gegen Original-Quellen
 8. generiere_audio.text_zu_audio()                         - Audio erzeugen (Deepgram)
+9. rhetorik_check.pruefe_rhetorik()                        - Rhetorik-Prüfung alle 4 Episoden
 
 Jeder Schritt läuft in einem eigenen try/except: schlägt einer fehl (Exception,
 API-Fehler wie 429 o.ä.), wird das deutlich geloggt, aber die Kette läuft mit
@@ -20,12 +21,18 @@ Schritt 6 tatsächlich eine Episode mit Manuskripttext geliefert hat. Schritt 8
 gefunden hat - sonst wird die Episode NICHT automatisch vertont (Status in
 "episoden" bleibt "ungeprueft"/schlägt fehl bzw. wird auf
 "pruefung_fehlgeschlagen" gesetzt, siehe Migration
-20260825080000_episoden_faktencheck.sql).
+20260825080000_episoden_faktencheck.sql). Schritt 9 (Rhetorik-Prüfung) läuft
+UNABHÄNGIG vom Erfolg der Schritte 6-8: er prüft die bereits gespeicherten
+letzten 4 Episoden insgesamt (nicht nur die aus diesem Lauf) und wird nur
+alle 4 Episoden tatsächlich ausgeführt, sonst übersprungen (siehe
+rhetorik_check.py). Anders als der Faktencheck in Schritt 7 prüft er
+rhetorische Qualität (Wiederholungen, Struktur, Einstieg), keine Fakten -
+reine Analyse/Empfehlung, ändert nichts automatisch.
 
-Am Ende wird eine Zusammenfassung ausgegeben und ein Protokoll-Eintrag
-(Gesamtlaufzeit, Erfolgsstatus, Fehlerdetails) in der Tabelle
-"lauf_protokoll" gespeichert (Migration 20260824170000_lauf_protokoll.sql
-muss angewendet sein).
+Am Ende wird eine Zusammenfassung ausgegeben (inkl. Rhetorik-Ergebnis, falls
+eine Prüfung stattfand) und ein Protokoll-Eintrag (Gesamtlaufzeit,
+Erfolgsstatus, Fehlerdetails) in der Tabelle "lauf_protokoll" gespeichert
+(Migration 20260824170000_lauf_protokoll.sql muss angewendet sein).
 
 Start ausschließlich manuell: `python morgenlauf.py`. Kein Scheduler/Cron.
 """
@@ -45,6 +52,7 @@ import generiere_audio
 import generiere_episode
 import kosten_tracking
 import recherche_und_redaktion
+import rhetorik_check
 import rss_einlesen
 
 load_dotenv()
@@ -162,6 +170,13 @@ def formatiere_audio(dateipfad: str) -> str:
     return f"Audio gespeichert: {dateipfad}"
 
 
+def formatiere_rhetorik(ergebnis: dict) -> str:
+    if ergebnis["status"] == "uebersprungen":
+        return f'übersprungen - noch {ergebnis["fehlende_episoden"]} Episode(n) bis zur nächsten Prüfung'
+    anzahl_probleme = len(ergebnis["konkrete_probleme"])
+    return f'{len(ergebnis["episode_ids"])} Episode(n) geprüft, {anzahl_probleme} konkrete(s) Problem(e) gefunden'
+
+
 def starte_lauf_protokoll() -> str | None:
     """Legt den lauf_protokoll-Eintrag VOR dem eigentlichen Lauf an (mit
     Platzhalterwerten) und gibt seine id zurück. Diese id wird als lauf_id an
@@ -203,7 +218,34 @@ def aktualisiere_lauf_protokoll(
         print(f"WARNUNG: Konnte Lauf-Protokoll nicht aktualisieren: {type(e).__name__}: {e}")
 
 
-def drucke_zusammenfassung(schritte: list[dict], gesamt_dauer: float, gesamtkosten_usd: float | None = None) -> None:
+def drucke_rhetorik_block(rhetorik_ergebnis: dict) -> None:
+    print(f"\n{'-' * 70}")
+    if rhetorik_ergebnis["status"] == "durchgefuehrt":
+        print("RHETORIK-PRÜFUNG:")
+        print(f'  Gesamteinschätzung: {rhetorik_ergebnis["gesamteinschaetzung"]}')
+        probleme = rhetorik_ergebnis["konkrete_probleme"][:3]
+        if probleme:
+            print("  Wichtigste Punkte:")
+            for p in probleme:
+                print(f'  - {p.get("problem")}')
+                print(f'    Beispiel: "{p.get("beispiel_zitat")}"')
+                print(f'    Vorschlag: {p.get("vorschlag")}')
+        else:
+            print("  Keine konkreten Kritikpunkte - Folgen wurden als stark bewertet.")
+    else:
+        print(
+            f'RHETORIK-PRÜFUNG: übersprungen - noch {rhetorik_ergebnis["fehlende_episoden"]} '
+            "Episode(n) bis zur nächsten Prüfung."
+        )
+    print("-" * 70)
+
+
+def drucke_zusammenfassung(
+    schritte: list[dict],
+    gesamt_dauer: float,
+    gesamtkosten_usd: float | None = None,
+    rhetorik_ergebnis: dict | None = None,
+) -> None:
     print(f"\n{'#' * 70}")
     print("GESAMT-ZUSAMMENFASSUNG")
     print("#" * 70)
@@ -227,6 +269,10 @@ def drucke_zusammenfassung(schritte: list[dict], gesamt_dauer: float, gesamtkost
     print(f"Gesamtlaufzeit: {gesamt_dauer:.1f}s")
     if gesamtkosten_usd is not None:
         print(f"Geschätzte API-Kosten dieses Laufs: ${gesamtkosten_usd:.4f}")
+
+    if rhetorik_ergebnis is not None:
+        drucke_rhetorik_block(rhetorik_ergebnis)
+
     print("#" * 70)
 
 
@@ -236,25 +282,25 @@ def main() -> None:
 
     lauf_id = starte_lauf_protokoll()
 
-    schritte.append(fuehre_schritt_aus("1/8 RSS-Feeds einlesen", rss_einlesen.main))
+    schritte.append(fuehre_schritt_aus("1/9 RSS-Feeds einlesen", rss_einlesen.main))
 
     schritte.append(
         fuehre_schritt_aus(
-            "2/8 Recherche-Agenten ausführen",
+            "2/9 Recherche-Agenten ausführen",
             lambda: recherche_und_redaktion.fuehre_recherche_agenten_aus(lauf_id=lauf_id),
         )
     )
 
     schritte.append(
         fuehre_schritt_aus(
-            "3/8 Redaktion ausführen",
+            "3/9 Redaktion ausführen",
             lambda: recherche_und_redaktion.fuehre_redaktion_aus(lauf_id=lauf_id),
         )
     )
 
     schritte.append(
         fuehre_schritt_aus(
-            "4/8 Akzeptierte Entscheidungen verarbeiten",
+            "4/9 Akzeptierte Entscheidungen verarbeiten",
             lambda: recherche_und_redaktion.verarbeite_akzeptierte_entscheidungen(lauf_id=lauf_id),
             formatiere_verarbeitung,
         )
@@ -262,14 +308,14 @@ def main() -> None:
 
     schritte.append(
         fuehre_schritt_aus(
-            "5/8 Update-Reaktivierung prüfen",
+            "5/9 Update-Reaktivierung prüfen",
             lambda: recherche_und_redaktion.pruefe_update_reaktivierung(lauf_id=lauf_id),
             formatiere_update_reaktivierung,
         )
     )
 
     schritt_manuskript = fuehre_schritt_aus(
-        "6/8 Manuskript erzeugen",
+        "6/9 Manuskript erzeugen",
         lambda: generiere_episode.erstelle_episode(lauf_id=lauf_id),
         formatiere_episode,
     )
@@ -277,14 +323,14 @@ def main() -> None:
 
     episode = schritt_manuskript["ergebnis"]
     if schritt_manuskript["status"] != "erfolgreich":
-        schritt_faktencheck = markiere_uebersprungen("7/8 Faktencheck", "Schritt 6 ist fehlgeschlagen")
+        schritt_faktencheck = markiere_uebersprungen("7/9 Faktencheck", "Schritt 6 ist fehlgeschlagen")
     elif episode is None:
         schritt_faktencheck = markiere_uebersprungen(
-            "7/8 Faktencheck", "kein Manuskript erzeugt (keine offenen Themen)"
+            "7/9 Faktencheck", "kein Manuskript erzeugt (keine offenen Themen)"
         )
     else:
         schritt_faktencheck = fuehre_schritt_aus(
-            "7/8 Faktencheck",
+            "7/9 Faktencheck",
             lambda: generiere_episode.pruefe_manuskript(
                 episode["id"], episode["manuskripttext"], episode["verwendete_themen"], lauf_id=lauf_id
             ),
@@ -294,15 +340,15 @@ def main() -> None:
 
     faktencheck_ergebnis = schritt_faktencheck["ergebnis"]
     if schritt_manuskript["status"] != "erfolgreich":
-        schritte.append(markiere_uebersprungen("8/8 Audio erzeugen", "Schritt 6 ist fehlgeschlagen"))
+        schritte.append(markiere_uebersprungen("8/9 Audio erzeugen", "Schritt 6 ist fehlgeschlagen"))
     elif episode is None:
-        schritte.append(markiere_uebersprungen("8/8 Audio erzeugen", "kein Manuskript erzeugt (keine offenen Themen)"))
+        schritte.append(markiere_uebersprungen("8/9 Audio erzeugen", "kein Manuskript erzeugt (keine offenen Themen)"))
     elif schritt_faktencheck["status"] != "erfolgreich":
-        schritte.append(markiere_uebersprungen("8/8 Audio erzeugen", "Faktencheck fehlgeschlagen"))
+        schritte.append(markiere_uebersprungen("8/9 Audio erzeugen", "Faktencheck fehlgeschlagen"))
     elif faktencheck_ergebnis["widerspruch"] > 0:
         schritte.append(
             markiere_uebersprungen(
-                "8/8 Audio erzeugen",
+                "8/9 Audio erzeugen",
                 f'Faktencheck hat {faktencheck_ergebnis["widerspruch"]} Widerspruch/Widersprüche '
                 "gefunden - Episode nicht freigegeben",
             )
@@ -310,11 +356,19 @@ def main() -> None:
     else:
         schritte.append(
             fuehre_schritt_aus(
-                "8/8 Audio erzeugen",
+                "8/9 Audio erzeugen",
                 lambda: erzeuge_audio_fuer_episode(episode, lauf_id=lauf_id),
                 formatiere_audio,
             )
         )
+
+    schritt_rhetorik = fuehre_schritt_aus(
+        "9/9 Rhetorik-Prüfung",
+        lambda: rhetorik_check.pruefe_rhetorik(lauf_id=lauf_id),
+        formatiere_rhetorik,
+    )
+    schritte.append(schritt_rhetorik)
+    rhetorik_ergebnis = schritt_rhetorik["ergebnis"]
 
     gesamt_dauer = time.monotonic() - gesamt_start
 
@@ -328,7 +382,7 @@ def main() -> None:
     except Exception as e:
         print(f"WARNUNG: Konnte API-Kosten nicht aggregieren: {type(e).__name__}: {e}")
 
-    drucke_zusammenfassung(schritte, gesamt_dauer, gesamtkosten_usd)
+    drucke_zusammenfassung(schritte, gesamt_dauer, gesamtkosten_usd, rhetorik_ergebnis)
 
     fehlgeschlagene_oder_uebersprungene = [s for s in schritte if s["status"] != "erfolgreich"]
     erfolgreich = not any(s["status"] == "fehlgeschlagen" for s in schritte)

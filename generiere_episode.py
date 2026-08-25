@@ -278,6 +278,24 @@ def baue_eroeffnungssignatur(format: str) -> str:
     )
 
 
+KI_KENNZEICHNUNG_SATZ = (
+    "Kurzer Hinweis vorweg: Diese Folge wurde vollautomatisch mit Künstlicher "
+    "Intelligenz erstellt - Recherche, Text und Stimme."
+)
+
+
+def baue_ki_kennzeichnung_hinweis() -> str:
+    return (
+        "Die ALLERERSTE Zeile des gesamten Manuskripts, noch VOR der "
+        "Eröffnungssignatur (nächster Punkt), muss WORTWÖRTLICH und UNVERÄNDERT "
+        "dieser Satz sein - keine Umformulierung, Kürzung, Ergänzung oder "
+        f'sprachliche Anpassung an den restlichen Ton: "{KI_KENNZEICHNUNG_SATZ}" '
+        "(Pflicht-Kennzeichnung für KI-generierte Audioinhalte nach Art. 50 EU AI "
+        "Act - muss zu Beginn jeder Folge stehen, unabhängig vom Format). Geh "
+        "danach OHNE Absatz oder Pause direkt mit der Eröffnungssignatur weiter."
+    )
+
+
 def baue_manuskript_prompt(
     persona: str,
     themen_block: str,
@@ -320,6 +338,7 @@ def baue_manuskript_prompt(
         'schon hatten"), bevor du die neue Entwicklung erzählst. Bei Themen ohne diesen '
         "Hinweis: keine solche Anmoderation.\n\n"
         "AUFBAU DER EPISODE:\n\n"
+        f"- {baue_ki_kennzeichnung_hinweis()}\n\n"
         f"- {eroeffnungssignatur}\n\n"
         "- Nach der Eröffnungssignatur (siehe oben) KEIN zusätzliches \"Hallo "
         "zusammen\" oder \"hier sind die Meldungen des Tages\". Geh direkt aus "

@@ -1,0 +1,54 @@
+name: Morgenlauf
+
+# Aktuell NUR manuell ausloesbar (Button "Run workflow" im Actions-Tab).
+# Es gibt bewusst noch KEINEN automatischen Zeitplan - siehe den
+# auskommentierten "schedule"-Block unten sowie README Abschnitt 10
+# ("Automatisierung"), wie man ihn spaeter aktiviert.
+"on":
+  workflow_dispatch: {}
+
+  # Beispiel-Zeitplan fuer "jeden Wochentag um 6:30 Uhr" (deutsche Zeit).
+  # GitHub-Actions-Cron laeuft immer in UTC: 4:30 UTC = 6:30 Uhr MESZ
+  # (Sommerzeit, UTC+2) bzw. 5:30 Uhr MEZ (Winterzeit, UTC+1) - Details
+  # dazu in README Abschnitt 10. Zum Aktivieren einfach die beiden
+  # "#"-Zeilen unten entfernen und committen.
+  # schedule:
+  #   - cron: "30 4 * * 1-5"
+
+jobs:
+  morgenlauf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Abhaengigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: morgenlauf.py ausfuehren
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL_NAME: ${{ secrets.GEMINI_MODEL_NAME }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: python morgenlauf.py | tee lauf.log
+
+      - name: Lauf-Log und Audio als Artefakt sichern
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: morgenlauf-${{ github.run_id }}
+          path: |
+            lauf.log
+            output/**
+          if-no-files-found: ignore
+          retention-days: 14

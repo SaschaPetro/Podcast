@@ -244,9 +244,9 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 - **Deepgram hat ein Limit von 2000 Zeichen pro Anfrage.** Längere Manuskripte werden automatisch an Satzgrenzen in Chunks aufgeteilt (`_teile_text`) und die Audio-Teile zusammengefügt.
 - **ElevenLabs-Kontingent ist begrenzt** - für finale/echte Aufnahmen aufheben, für Tests Deepgram (Standard-Anbieter) nutzen.
 - **`google.generativeai` (Python-Paket) ist deprecated** (Gemini-Team empfiehlt Umstieg auf `google.genai`) - erzeugt aktuell bei jedem Lauf eine `FutureWarning`, funktioniert aber noch.
-- **Kein Scheduler/Cron** - `morgenlauf.py` bündelt den kompletten Ablauf von RSS bis Audio in einem Skript (siehe Abschnitt "Reihenfolge" oben im Docstring der Datei), muss aber weiterhin manuell gestartet werden (`python morgenlauf.py`); es gibt aktuell keinen automatischen/zeitgesteuerten Trigger.
+- **Noch kein automatischer Zeitplan, aber ein manueller GitHub-Actions-Trigger** - `morgenlauf.py` bündelt den kompletten Ablauf von RSS bis Audio in einem Skript (siehe Abschnitt "Reihenfolge" oben im Docstring der Datei) und lässt sich über den Workflow `.github/workflows/morgenlauf.yml` per Knopfdruck im GitHub-Actions-Tab starten, zusätzlich weiterhin lokal per `python morgenlauf.py` (siehe Abschnitt 10). Ein automatischer Cron-Zeitplan ist im Workflow vorbereitet, aber bewusst auskommentiert - es gibt also aktuell keinen zeitgesteuerten Trigger, nur den manuellen.
 - **Themen-Markierung ist konservativ:** Liefert die Moderator-KI keine gültige `VERWENDETE_THEMEN_IDS`-Zeile, wird sicherheitshalber **kein** Thema als "gesendet" markiert (Warnung in der Konsole) - besser als fälschlich Themen zu verlieren, kann aber dazu führen, dass Themen manuell nachgepflegt werden müssen.
-- **`episoden.kosten` wird aktuell nirgends befüllt** - keine Kostenerfassung pro Episode implementiert.
+- **`episoden.kosten` wird befüllt, aber nur bei einem kompletten `morgenlauf.py`-Durchlauf** - `kosten_tracking.py` loggt jeden Gemini-/Deepgram-/ElevenLabs-Aufruf in `api_kosten`; die Summe pro Episode wird aber erst am Ende von `morgenlauf.py` gebildet und in `episoden.kosten` geschrieben. Wird `erstelle_episode()` standalone aufgerufen (siehe Abschnitt 3), bleibt `episoden.kosten` leer, weil dieser Aggregationsschritt dort nicht mitläuft. Die Werte sind zudem Schätzungen auf Basis der manuell gepflegten Preistabelle in `kosten_tracking.py`, nicht die tatsächlich abgerechneten Anbieterkosten.
 - **`themen.quelle` wird aktuell nirgends befüllt.**
 
 ## 9. Häufige Änderungen - Schnellreferenz
@@ -273,6 +273,26 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 | Sprechgeschwindigkeit der Audiodatei | `DEEPGRAM_SPEED_STANDARD` | `generiere_audio.py` (wirkt nur bei englischen Stimmen) |
 | Wie streng der Faktencheck prüft | Prompt-Text in `baue_faktencheck_prompt` | `generiere_episode.py` |
 | Welches Gemini-Modell für Text/Redaktion verwendet wird | `GEMINI_MODEL_NAME` | `.env` |
+
+## 10. Automatisierung (GitHub Actions)
+
+**Aktueller Stand:** Der komplette Durchlauf (`morgenlauf.py`) lässt sich über GitHub Actions manuell anstoßen, ohne dass jemand lokal `python morgenlauf.py` ausführen muss. Der Workflow `.github/workflows/morgenlauf.yml` reagiert aktuell **ausschließlich auf einen manuellen Klick** (`workflow_dispatch`) - es gibt bewusst noch **keinen** automatischen Zeitplan.
+
+**Manuell auslösen:**
+1. GitHub-Repo → Tab "Actions" → Workflow "Morgenlauf" in der linken Liste auswählen.
+2. Button "Run workflow" → nochmal "Run workflow" bestätigen.
+3. Nach Abschluss (egal ob erfolgreich oder mit Fehlern) im Lauf unter "Artifacts" das Paket `morgenlauf-<run-id>` herunterladen - enthält `lauf.log` (komplette Konsolen-Ausgabe wie lokal) sowie alle in `output/` erzeugten MP3-Dateien. GitHub Actions hat keinen dauerhaften Dateispeicher, deshalb muss die Audiodatei nach jedem Lauf so heruntergeladen werden.
+
+**Voraussetzung: GitHub Secrets sind gesetzt.** Repo → Settings → Secrets and variables → Actions → "New repository secret" für jede der Variablen aus Abschnitt 7, die `morgenlauf.py` tatsächlich braucht (`SUPABASE_URL`, `SUPABASE_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`) - mit denselben Werten wie in der lokalen `.env`. Ohne diese Secrets schlägt der Lauf beim ersten API-Aufruf fehl. (`TAVILY_API_KEY`/`EXA_API_KEY` werden aktuell von keinem Pipeline-Schritt gelesen - nur von `test_apis.py`, das nicht Teil des Workflows ist - und sind deshalb nicht im Workflow verdrahtet.)
+
+**Später: automatischen Zeitplan aktivieren.** In `.github/workflows/morgenlauf.yml` steht im `on:`-Block ein auskommentierter `schedule`-Vorschlag für "jeden Wochentag um 6:30 Uhr" (deutsche Zeit):
+
+```yaml
+# schedule:
+#   - cron: "30 4 * * 1-5"
+```
+
+GitHub-Actions-Cron läuft immer in UTC: `30 4` = 4:30 UTC, das entspricht 6:30 Uhr MESZ (Sommerzeit, UTC+2) bzw. 5:30 Uhr MEZ (Winterzeit, UTC+1) - der Wert müsste beim Zeitwechsel also strenggenommen angepasst werden, wenn 6:30 Uhr exakt gehalten werden soll (in der Praxis meist vernachlässigbar). `1-5` steht für Montag-Freitag. Zum Aktivieren einfach die beiden `#`-Zeilen entfernen und committen - danach läuft `morgenlauf.py` automatisch nach diesem Zeitplan, zusätzlich weiterhin manuell auslösbar.
 
 ---
 

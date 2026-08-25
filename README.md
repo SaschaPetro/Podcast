@@ -22,18 +22,24 @@ flowchart TD
     RED -->|recherche_und_redaktion.py redaktion| ENT[("redaktion_entscheidungen")]
 
     ENT -->|"verarbeite_akzeptierte_entscheidungen()<br/>Embedding + Ähnlichkeitssuche"| THE[("themen<br/>+ themen_updates")]
+    THE -->|"nur bei NEUEM Thema<br/>(spart Kosten)"| ZQ["Zweite-Quelle-Check<br/>Tavily/Exa-Suche + Gemini"]
+    ZQ -.->|"zweite_quelle_bestaetigt/-url/<br/>-einschaetzung"| THE
 
     THE -->|generiere_episode.py| MOD["Moderator-Agent<br/>Podcast-Moderator"]
     MOD -->|"wählt 5-6 Themen,<br/>schreibt Manuskript"| EP[("episoden<br/>manuskripttext")]
+    EP -.->|"Original-Quellen der<br/>verwendeten Themen"| EQ[("episoden_quellen")]
 
     EP -->|"pruefe_manuskript()<br/>gegen Original-Quellen"| FC{"Faktencheck<br/>Widerspruch?"}
     FC -->|nein: freigegeben| TTS["Text-to-Speech<br/>Deepgram / ElevenLabs"]
     FC -->|ja: pruefung_fehlgeschlagen| STOP["Audio übersprungen,<br/>manuelle Prüfung nötig"]
     TTS --> MP3["output/episode_&lt;id&gt;.mp3"]
     MP3 -.->|audio_pfad| EP
+
+    EP -->|"alle 4 Episoden"| RHET["Rhetorik-Agent<br/>Rhetorik-Check"]
+    RHET --> RB[("rhetorik_bewertungen")]
 ```
 
-**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat). Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt das Manuskript. Bevor daraus Audio erzeugt wird, prüft ein Faktencheck-Schritt das Manuskript gegen die Original-Quellen; nur bei Freigabe wird die MP3 erzeugt.
+**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat) - entsteht dabei ein neues Thema, sucht zusätzlich eine Zweite-Quelle-Verifikation (Tavily/Exa + Gemini) nach unabhängiger Bestätigung des Kernfakts. Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt das Manuskript; die dabei verwendeten Original-Quellen werden dauerhaft in `episoden_quellen` festgehalten. Bevor daraus Audio erzeugt wird, prüft ein Faktencheck-Schritt das Manuskript gegen die Original-Quellen; nur bei Freigabe wird die MP3 erzeugt. Unabhängig davon prüft alle 4 Episoden ein Rhetorik-Agent die zuletzt erschienenen Manuskripte auf Wiederholungen und die Balance zwischen Storytelling und Nachrichtenkern - rein informativ, ohne automatische Änderung.
 
 ## 3. Die KI-Agenten
 
@@ -129,18 +135,38 @@ Oder über die Kommandozeile: `python generiere_episode.py format=montag`
 
 Es gibt aktuell **keinen** `fuehre_einzelnen_agenten_aus`-Test für den Moderator ohne Seiteneffekte - jeder Aufruf von `erstelle_episode` legt eine echte Zeile in `episoden` an und markiert Themen als gesendet.
 
+### Rhetorik-Agent (`rolle = 'rhetorik'`)
+
+Ein Agent: **Rhetorik-Check** - unabhängig vom Faktencheck (der nur Fakten prüft, siehe Abschnitt 5, Punkt 7), prüft dieser Agent die *rhetorische* Qualität über mehrere Episoden hinweg: wiederholte Formulierungen/Satzmuster über Folgen hinweg, ob Einstiege/Übergänge/Abschlüsse wirklich variieren, und die Balance zwischen packendem Storytelling und dem eigentlichen Nachrichtenkern (der Podcast soll kein Hörspiel werden).
+
+**Was er tut:** `pruefe_rhetorik()` in `rhetorik_check.py` zählt, wie viele Episoden mit Manuskripttext seit dem letzten Eintrag in `rhetorik_bewertungen` entstanden sind (oder insgesamt, falls noch keiner existiert). Sind es weniger als `MINDEST_EPISODEN` (aktuell 4), wird die Prüfung übersprungen (Konsolen-Hinweis, wie viele noch fehlen) - sonst gehen die 4 neuesten Episoden-Manuskripte chronologisch sortiert gebündelt an Gemini, zusammen mit der `fokus_beschreibung` dieses Agenten. Das Ergebnis (Gesamteinschätzung + Liste konkreter Probleme mit Zitat und Verbesserungsvorschlag) landet in `rhetorik_bewertungen`. **Wichtig:** reine Analyse/Empfehlung - ändert nie automatisch etwas am Manuskript-Prompt oder an bestehenden Episoden, das muss manuell entschieden werden (z.B. durch Anpassen des Prompts in Abschnitt 6).
+
+**Ändern:** Table Editor → `agenten_konfiguration` → Zeile mit `rolle = 'rhetorik'` → `fokus_beschreibung` bearbeiten, um andere Schwerpunkte zu setzen. Die Prüf-Häufigkeit (`MINDEST_EPISODEN`) liegt dagegen im Code (`rhetorik_check.py`).
+
+**Einzeln testen:**
+
+```python
+from rhetorik_check import pruefe_rhetorik
+
+pruefe_rhetorik()
+```
+
+Oder über die Kommandozeile: `python rhetorik_check.py`. Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens `MINDEST_EPISODEN` neue Episoden entstanden sind - sonst nur ein Konsolen-Hinweis, keine Zeile in `rhetorik_bewertungen`.
+
 ## 4. Die Datenbank
 
 | Tabelle | Zweck | Wichtige Spalten | Verknüpfung |
 |---|---|---|---|
 | `rohnachrichten` | Rohe RSS-Einträge, unverarbeitet | `quelle`, `url` (unique), `titel`, `text`, `abrufzeitpunkt` | - |
-| `agenten_konfiguration` | Konfiguration aller Agenten (Recherche, Redaktion, Moderator) | `name`, `rolle` (recherche/redaktion/moderator), `fokus_beschreibung`, `aktiv` | - |
+| `agenten_konfiguration` | Konfiguration aller Agenten (Recherche, Redaktion, Moderator, Rhetorik) | `name`, `rolle` (recherche/redaktion/moderator/rhetorik), `fokus_beschreibung`, `aktiv` | - |
 | `agent_vorschlaege` | Von Recherche-Agenten vorgeschlagene Rohnachrichten | `agent_id`, `rohnachricht_id`, `begruendung`, `vorgeschlagen_am` | `agent_id` → `agenten_konfiguration.id`; `rohnachricht_id` → `rohnachrichten.id` |
 | `redaktion_entscheidungen` | Redaktions-Entscheidungen zu jedem Vorschlag | `vorschlag_id`, `akzeptiert`, `begruendung`, `thema_id` (nullable), `entschieden_am` | `vorschlag_id` → `agent_vorschlaege.id`; `thema_id` → `themen.id` (wird erst nach `verarbeite_akzeptierte_entscheidungen()` befüllt) |
-| `themen` | Konsolidierte Themen (nach Dedup) | `titel`, `zusammenfassung`, `status` (neu / in Verfolgung / gesendet), `erster_kontaktzeitpunkt`, `letztes_update`, `embedding` (vector(768), Gemini) | - |
+| `themen` | Konsolidierte Themen (nach Dedup) | `titel`, `zusammenfassung`, `status` (neu / in Verfolgung / gesendet), `erster_kontaktzeitpunkt`, `letztes_update`, `embedding` (vector(768), Gemini), `zweite_quelle_bestaetigt`/`-url`/`-einschaetzung` (nur bei neu angelegten Themen befüllt, siehe Abschnitt 5) | - |
 | `themen_updates` | Historie neuer Fakten zu einem bestehenden Thema | `thema_id`, `was_neu`, `datum` | `thema_id` → `themen.id` (cascade delete) |
 | `redaktion_update_entscheidungen` | Redaktions-Entscheidungen über Updates zu bereits gesendeten Themen | `update_id`, `thema_id`, `wieder_aufgenommen`, `begruendung`, `entschieden_am` | `update_id` → `themen_updates.id`; `thema_id` → `themen.id` (cascade delete) |
 | `episoden` | Fertige Episoden | `datum`, `manuskripttext`, `audio_pfad`, `kosten` (aktuell nirgends befüllt), `status` (`ungeprueft`/`freigegeben`/`pruefung_fehlgeschlagen`), `faktencheck_ergebnis` (jsonb: Zähler + Detail-Liste) | - |
+| `episoden_quellen` | Dauerhafte Verknüpfung Episode → Original-Rohnachrichten der tatsächlich verwendeten Themen | `episode_id`, `thema_id` (nullable), `rohnachricht_id` (nullable), `quelle_name`, `quelle_url`, `titel` | `episode_id` → `episoden.id`; `thema_id` → `themen.id`; `rohnachricht_id` → `rohnachrichten.id` |
+| `rhetorik_bewertungen` | Ergebnis der periodischen Rhetorik-Prüfung (alle 4 Episoden) | `zeitstempel`, `episode_ids` (uuid-Array), `gesamteinschaetzung`, `konkrete_probleme` (jsonb: Liste `{problem, beispiel_zitat, vorschlag}`) | - (kein FK auf `episoden`, `episode_ids` ist ein reines Array) |
 
 Ähnlichkeitssuche für Dedup läuft über die SQL-Funktion `finde_aehnliche_themen(such_embedding, schwellenwert)` (Cosine Similarity via `pgvector`/HNSW-Index auf `themen.embedding`).
 
@@ -153,8 +179,8 @@ Es gibt aktuell **keinen** `fuehre_einzelnen_agenten_aus`-Test für den Moderato
    - Gemini-Embedding erzeugen
    - Per `finde_aehnliche_themen` (Schwellenwert 0.85, Cosine Similarity) nach einem bestehenden, ähnlichen Thema suchen
    - Gibt es einen Treffer: Gemini prüft, ob der neue Text einen konkreten neuen Fakt enthält → entweder Eintrag in `themen_updates` (Update) oder Verwerfen als Duplikat (nur Verknüpfung, kein neuer Inhalt)
-   - Kein Treffer: neues Thema in `themen` mit Status `neu`
-5. **Finale Manuskript-Auswahl:** `generiere_episode.py` holt alle Themen mit Status `neu` oder `in Verfolgung` (unabhängig davon, wie sie entstanden sind) und lässt den Moderator-Agenten daraus die 5-6 wichtigsten für die aktuelle Folge auswählen (Abschnitt "THEMENAUSWAHL" im Prompt, siehe Abschnitt 6). Nur die vom Moderator tatsächlich verwendeten Themen werden danach auf Status `gesendet` gesetzt; die übrigen bleiben offen für die nächste Folge.
+   - Kein Treffer: neues Thema in `themen` mit Status `neu` - **nur in diesem Fall** (nicht bei Update/Duplikat, um Kosten zu sparen) läuft zusätzlich eine Zweite-Quelle-Verifikation (`pruefe_zweite_quelle` in `recherche_und_redaktion.py`, Ausschreibungs-Kriterium 5): gezielte Suche per Tavily (Fallback bei Fehler/leerem Ergebnis: Exa) mit dem Themen-Titel als Anfrage, die Top-Treffer gehen zusammen mit dem Original-Rohnachrichtentext an Gemini mit der Frage, ob eine unabhängige Quelle den Kernfakt bestätigt. Ergebnis landet direkt in `themen.zweite_quelle_bestaetigt`/`-url`/`-einschaetzung` - **rein dokumentarisch**, ein "nicht bestätigt" verhindert nicht, dass das Thema trotzdem in eine Folge aufgenommen wird. Liefern weder Tavily noch Exa Treffer, bleiben die Felder `NULL` (nur Konsolen-Hinweis, kein Fehler, blockiert die Themen-Anlage nie).
+5. **Finale Manuskript-Auswahl:** `generiere_episode.py` holt alle Themen mit Status `neu` oder `in Verfolgung` (unabhängig davon, wie sie entstanden sind) und lässt den Moderator-Agenten daraus die 5-6 wichtigsten für die aktuelle Folge auswählen (Abschnitt "THEMENAUSWAHL" im Prompt, siehe Abschnitt 6). Nur die vom Moderator tatsächlich verwendeten Themen werden danach auf Status `gesendet` gesetzt; die übrigen bleiben offen für die nächste Folge. Für jedes tatsächlich verwendete Thema werden zusätzlich die verknüpften Original-Rohnachrichten dauerhaft in `episoden_quellen` gespeichert (`speichere_episoden_quellen` in `erstelle_episode`) - Themen ohne nachvollziehbare Verknüpfung (z.B. alte Seed-/Testdaten) bekommen dabei keine Zeile, nur eine Konsolen-Meldung.
 6. **Update-Check nach dem Senden:** Kommt zu einem bereits gesendeten Thema (`themen.status = 'gesendet'`) später ein neues Update in `themen_updates` hinzu, prüft der Redaktions-Agent über `pruefe_update_reaktivierung()` bei jedem Lauf, ob das Update wichtig genug ist, um das Thema zurück auf `in Verfolgung` zu setzen - und damit erneut für die Manuskript-Auswahl (Schritt 5) in Frage kommt (siehe Abschnitt 3).
 7. **Faktencheck vor der Veröffentlichung:** `pruefe_manuskript()` in `generiere_episode.py` sammelt für jedes tatsächlich verwendete Thema die verknüpften Original-Rohnachrichten (über `redaktion_entscheidungen` -> `agent_vorschlaege` -> `rohnachrichten`) und lässt Gemini jede konkrete Zahl, jeden Eigennamen und jede Datumsangabe im Manuskript dagegen prüfen. Ergebnis (`bestaetigt`/`widerspruch`/`nicht_belegt` je Behauptung) landet in `episoden.faktencheck_ergebnis`, der Episoden-`status` wird auf `freigegeben` oder `pruefung_fehlgeschlagen` gesetzt. Bei mindestens einem `widerspruch` überspringt `morgenlauf.py` die Audio-Erzeugung (Schritt 7) - die Episode bleibt unvertont, bis sie manuell geprüft wurde. Ein `nicht_belegt` blockiert nichts automatisch (kann ein bewusst erfundenes Storytelling-Beispiel sein).
 
@@ -191,16 +217,18 @@ GEMINI_API_KEY=
 GEMINI_MODEL_NAME=
 DEEPGRAM_API_KEY=
 ELEVENLABS_API_KEY=
+TAVILY_API_KEY=
+EXA_API_KEY=
 ```
 
-`GEMINI_MODEL_NAME` steuert zentral, welches Gemini-Modell `generiere_episode.py`, `recherche_und_redaktion.py` und `verarbeite_rohnachricht.py` für Text/Redaktion verwenden (aktuell `gemini-2.5-flash-lite` - höheres Free-Tier-Kontingent als `gemini-3.6-flash`, das nur 20 Anfragen/Tag erlaubt).
+`GEMINI_MODEL_NAME` steuert zentral, welches Gemini-Modell `generiere_episode.py`, `recherche_und_redaktion.py`, `verarbeite_rohnachricht.py` und `rhetorik_check.py` für Text/Redaktion verwenden (aktuell `gemini-2.5-flash-lite` - höheres Free-Tier-Kontingent als `gemini-3.6-flash`, das nur 20 Anfragen/Tag erlaubt).
 
-Zusätzlich in `.env` vorhanden, aber aktuell **nicht** von der Haupt-Pipeline verwendet (nur experimentell in `test_apis.py`):
+`TAVILY_API_KEY`/`EXA_API_KEY` werden für die Zweite-Quelle-Verifikation neu angelegter Themen genutzt (siehe Abschnitt 5, Punkt 4). Fehlen sie oder schlagen beide Aufrufe fehl, wird die Prüfung für das jeweilige Thema übersprungen (Konsolen-Hinweis, `zweite_quelle_*`-Felder bleiben `NULL`) - die Themen-Anlage selbst läuft trotzdem normal weiter, kein Absturz.
+
+Zusätzlich in `.env` vorhanden, aber aktuell **nicht** von der Pipeline verwendet (nur experimentell in `test_apis.py`):
 
 ```
 OPENAI_API_KEY=
-TAVILY_API_KEY=
-EXA_API_KEY=
 ```
 
 ### Kompletter Durchlauf (Reihenfolge)
@@ -233,6 +261,14 @@ text_zu_audio(text, dateipfad)
 sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).execute()
 ```
 
+Danach optional die Rhetorik-Prüfung:
+
+```
+python rhetorik_check.py
+```
+
+Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue Episoden entstanden sind - sonst nur ein Konsolen-Hinweis, siehe Abschnitt 3.
+
 ### Einmalig / bei Bedarf
 
 - `embeddings_backfill.py` - erzeugt fehlende Embeddings für Themen ohne `embedding`-Wert (Wartungsskript, kein fester Bestandteil des regulären Durchlaufs).
@@ -244,10 +280,13 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 - **Deepgram hat ein Limit von 2000 Zeichen pro Anfrage.** Längere Manuskripte werden automatisch an Satzgrenzen in Chunks aufgeteilt (`_teile_text`) und die Audio-Teile zusammengefügt.
 - **ElevenLabs-Kontingent ist begrenzt** - für finale/echte Aufnahmen aufheben, für Tests Deepgram (Standard-Anbieter) nutzen.
 - **`google.generativeai` (Python-Paket) ist deprecated** (Gemini-Team empfiehlt Umstieg auf `google.genai`) - erzeugt aktuell bei jedem Lauf eine `FutureWarning`, funktioniert aber noch.
-- **Noch kein automatischer Zeitplan, aber ein manueller GitHub-Actions-Trigger** - `morgenlauf.py` bündelt den kompletten Ablauf von RSS bis Audio in einem Skript (siehe Abschnitt "Reihenfolge" oben im Docstring der Datei) und lässt sich über den Workflow `.github/workflows/morgenlauf.yml` per Knopfdruck im GitHub-Actions-Tab starten, zusätzlich weiterhin lokal per `python morgenlauf.py` (siehe Abschnitt 10). Ein automatischer Cron-Zeitplan ist im Workflow vorbereitet, aber bewusst auskommentiert - es gibt also aktuell keinen zeitgesteuerten Trigger, nur den manuellen.
+- **Noch kein automatischer Zeitplan, aber ein manueller GitHub-Actions-Trigger** - `morgenlauf.py` bündelt den kompletten Ablauf von RSS bis Rhetorik-Prüfung (9 Schritte, siehe Docstring der Datei) in einem Skript und lässt sich über den Workflow `.github/workflows/morgenlauf.yml` per Knopfdruck im GitHub-Actions-Tab starten, zusätzlich weiterhin lokal per `python morgenlauf.py` (siehe Abschnitt 10). Ein automatischer Cron-Zeitplan ist im Workflow vorbereitet, aber bewusst auskommentiert - es gibt also aktuell keinen zeitgesteuerten Trigger, nur den manuellen.
 - **Themen-Markierung ist konservativ:** Liefert die Moderator-KI keine gültige `VERWENDETE_THEMEN_IDS`-Zeile, wird sicherheitshalber **kein** Thema als "gesendet" markiert (Warnung in der Konsole) - besser als fälschlich Themen zu verlieren, kann aber dazu führen, dass Themen manuell nachgepflegt werden müssen.
 - **`episoden.kosten` wird befüllt, aber nur bei einem kompletten `morgenlauf.py`-Durchlauf** - `kosten_tracking.py` loggt jeden Gemini-/Deepgram-/ElevenLabs-Aufruf in `api_kosten`; die Summe pro Episode wird aber erst am Ende von `morgenlauf.py` gebildet und in `episoden.kosten` geschrieben. Wird `erstelle_episode()` standalone aufgerufen (siehe Abschnitt 3), bleibt `episoden.kosten` leer, weil dieser Aggregationsschritt dort nicht mitläuft. Die Werte sind zudem Schätzungen auf Basis der manuell gepflegten Preistabelle in `kosten_tracking.py`, nicht die tatsächlich abgerechneten Anbieterkosten.
 - **`themen.quelle` wird aktuell nirgends befüllt.**
+- **Zweite-Quelle-Verifikation läuft nur für neu angelegte Themen, nicht rückwirkend.** Alt-Themen (vor Einführung dieses Features, oder aus Updates/Duplikaten) haben `zweite_quelle_bestaetigt = NULL` - das heißt nicht "nicht bestätigt", sondern "nie geprüft".
+- **Rhetorik-Prüfung ist rein informativ.** `pruefe_rhetorik()` ändert nie automatisch den Manuskript-Prompt (Abschnitt 6) oder bestehende Episoden - gefundene Kritikpunkte müssen manuell umgesetzt werden.
+- **`episoden_quellen` bekommt keine Zeile für Themen ohne nachvollziehbare Quellen-Verknüpfung** (z.B. alte Seed-/Testdaten ohne `redaktion_entscheidungen`-Bezug) - kein Fehler, nur eine Konsolen-Meldung beim Episode-Erstellen.
 
 ## 9. Häufige Änderungen - Schnellreferenz
 
@@ -273,6 +312,9 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 | Sprechgeschwindigkeit der Audiodatei | `DEEPGRAM_SPEED_STANDARD` | `generiere_audio.py` (wirkt nur bei englischen Stimmen) |
 | Wie streng der Faktencheck prüft | Prompt-Text in `baue_faktencheck_prompt` | `generiere_episode.py` |
 | Welches Gemini-Modell für Text/Redaktion verwendet wird | `GEMINI_MODEL_NAME` | `.env` |
+| Worauf der Rhetorik-Agent achtet | `fokus_beschreibung` (Zeile `rolle='rhetorik'`) | Table Editor, `agenten_konfiguration` |
+| Wie oft die Rhetorik-Prüfung läuft (aktuell alle 4 Episoden) | `MINDEST_EPISODEN` | `rhetorik_check.py` |
+| Wie viele Tavily/Exa-Treffer die Zweite-Quelle-Verifikation holt | `ZWEITE_QUELLE_MAX_TREFFER` | `recherche_und_redaktion.py` |
 
 ## 10. Automatisierung (GitHub Actions)
 
@@ -283,7 +325,7 @@ sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).exec
 2. Button "Run workflow" → nochmal "Run workflow" bestätigen.
 3. Nach Abschluss (egal ob erfolgreich oder mit Fehlern) im Lauf unter "Artifacts" das Paket `morgenlauf-<run-id>` herunterladen - enthält `lauf.log` (komplette Konsolen-Ausgabe wie lokal) sowie alle in `output/` erzeugten MP3-Dateien. GitHub Actions hat keinen dauerhaften Dateispeicher, deshalb muss die Audiodatei nach jedem Lauf so heruntergeladen werden.
 
-**Voraussetzung: GitHub Secrets sind gesetzt.** Repo → Settings → Secrets and variables → Actions → "New repository secret" für jede der Variablen aus Abschnitt 7, die `morgenlauf.py` tatsächlich braucht (`SUPABASE_URL`, `SUPABASE_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`) - mit denselben Werten wie in der lokalen `.env`. Ohne diese Secrets schlägt der Lauf beim ersten API-Aufruf fehl. (`TAVILY_API_KEY`/`EXA_API_KEY` werden aktuell von keinem Pipeline-Schritt gelesen - nur von `test_apis.py`, das nicht Teil des Workflows ist - und sind deshalb nicht im Workflow verdrahtet.)
+**Voraussetzung: GitHub Secrets sind gesetzt.** Repo → Settings → Secrets and variables → Actions → "New repository secret" für jede der Variablen aus Abschnitt 7, die `morgenlauf.py` tatsächlich braucht (`SUPABASE_URL`, `SUPABASE_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`) - mit denselben Werten wie in der lokalen `.env`. Ohne `TAVILY_API_KEY`/`EXA_API_KEY` schlägt der Lauf nicht ab, die Zweite-Quelle-Verifikation (Abschnitt 5) wird für neue Themen nur übersprungen (Konsolen-Hinweis). Ohne die übrigen Secrets schlägt der Lauf beim ersten API-Aufruf fehl. (`OPENAI_API_KEY` wird aktuell von keinem Pipeline-Schritt gelesen - nur von `test_apis.py`, das nicht Teil des Workflows ist - und ist deshalb nicht im Workflow verdrahtet.)
 
 **Später: automatischen Zeitplan aktivieren.** In `.github/workflows/morgenlauf.yml` steht im `on:`-Block ein auskommentierter `schedule`-Vorschlag für "jeden Wochentag um 6:30 Uhr" (deutsche Zeit):
 

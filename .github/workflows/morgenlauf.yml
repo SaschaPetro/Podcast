@@ -40,6 +40,8 @@ jobs:
           GEMINI_MODEL_NAME: ${{ secrets.GEMINI_MODEL_NAME }}
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
         run: |
           set -o pipefail
           python morgenlauf.py | tee lauf.log

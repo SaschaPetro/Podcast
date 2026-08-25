@@ -40,7 +40,9 @@ jobs:
           GEMINI_MODEL_NAME: ${{ secrets.GEMINI_MODEL_NAME }}
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-        run: python morgenlauf.py | tee lauf.log
+        run: |
+          set -o pipefail
+          python morgenlauf.py | tee lauf.log
 
       - name: Lauf-Log und Audio als Artefakt sichern
         if: always()

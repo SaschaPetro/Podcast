@@ -32,6 +32,19 @@ Drei unabhängig aufrufbare Funktionen:
    trägt die entstandene/gefundene thema_id zur Dokumentation zurück in
    "redaktion_entscheidungen" ein.
 
+   Wird dabei ein NEUES Thema angelegt (nicht bei Update/Duplikat, um
+   Kosten zu sparen), läuft zusätzlich eine Zweite-Quelle-Verifikation
+   (Ausschreibungs-Kriterium 5, siehe pruefe_zweite_quelle()): gezielte
+   Tavily-Suche mit dem Themen-Titel als Anfrage, bei leerem Ergebnis oder
+   Fehler Exa als Fallback. Die Top-Treffer gehen zusammen mit dem
+   Original-Rohnachrichtentext an Gemini, das Ergebnis (bestätigt/nicht
+   bestätigt + Quelle + Einschätzung) wird direkt an der Themen-Zeile
+   gespeichert. Liefert weder Tavily noch Exa Treffer, bleibt das Feld
+   NULL ("nicht geprüft") und es gibt nur eine Konsolen-Notiz - kein
+   Fehler, und ein Fehlschlag hier blockiert nie die Themen-Zuordnung
+   selbst. Voraussetzung: Migration
+   20260825140000_zweite_quelle_verifikation.sql muss angewendet sein.
+
 Voraussetzung: Migration 20260824120000_agenten_konfiguration_rolle.sql
 muss angewendet sein (Spalte "rolle" in agenten_konfiguration), sowie
 Migration 20260824160000_redaktion_update_entscheidungen.sql (Tabelle
@@ -44,7 +57,9 @@ from datetime import datetime, timedelta, timezone
 
 import google.generativeai as genai
 from dotenv import load_dotenv
+from exa_py import Exa
 from supabase import create_client
+from tavily import TavilyClient
 
 import kosten_tracking
 import verarbeite_rohnachricht
@@ -58,6 +73,7 @@ CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
 MAX_ALTER_TAGE = 3
 MAX_ZURUECKSTELLUNG_TAGE = 3
 GUELTIGE_STATUS = {"akzeptiert", "abgelehnt", "zurueckgestellt"}
+ZWEITE_QUELLE_MAX_TREFFER = 5
 
 
 def hole_supabase_client():
@@ -699,6 +715,112 @@ def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:
     return ergebnis
 
 
+def hole_tavily_treffer(query: str) -> list[dict]:
+    client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+    antwort = client.search(
+        query, search_depth="basic", topic="news", max_results=ZWEITE_QUELLE_MAX_TREFFER
+    )
+    return [
+        {"titel": r.get("title"), "url": r.get("url"), "ausschnitt": r.get("content") or ""}
+        for r in antwort.get("results") or []
+    ]
+
+
+def hole_exa_treffer(query: str) -> list[dict]:
+    client = Exa(api_key=os.environ["EXA_API_KEY"])
+    antwort = client.search(
+        query, num_results=ZWEITE_QUELLE_MAX_TREFFER, contents={"text": {"max_characters": 500}}
+    )
+    return [{"titel": r.title, "url": r.url, "ausschnitt": r.text or ""} for r in antwort.results]
+
+
+def hole_zweite_quelle_treffer(thema_titel: str) -> list[dict]:
+    """Sucht gezielt nach unabhängigen Quellen zum Themen-Titel: erst Tavily,
+    bei Fehler oder leerem Ergebnis Exa als Fallback. Liefert beide nichts,
+    kommt eine leere Liste zurück (kein Fehler)."""
+    try:
+        treffer = hole_tavily_treffer(thema_titel)
+    except Exception as e:
+        print(f"  Tavily-Fehler bei Zweite-Quelle-Suche ({type(e).__name__}: {e}), versuche Exa...")
+        treffer = []
+
+    if treffer:
+        return treffer
+
+    try:
+        return hole_exa_treffer(thema_titel)
+    except Exception as e:
+        print(f"  Exa-Fehler bei Zweite-Quelle-Suche ({type(e).__name__}: {e}).")
+        return []
+
+
+def baue_zweite_quelle_prompt(rohnachricht_text: str, treffer: list[dict]) -> str:
+    treffer_block = "\n\n".join(
+        f'Quelle: {t["titel"]}\nURL: {t["url"]}\nAusschnitt: {t["ausschnitt"][:800]}' for t in treffer
+    )
+    return (
+        "URSPRÜNGLICHER TEXT (Basis des Themas):\n"
+        f"{rohnachricht_text}\n\n"
+        "GEFUNDENE SUCHERGEBNISSE (unabhängige Quellen):\n"
+        f"{treffer_block}\n\n"
+        "Bestätigt eine dieser unabhängigen Quellen den Kernfakt des Themas? "
+        'Antworte NUR mit JSON: {"bestaetigt": bool, "bestaetigende_quelle_url": string oder null, '
+        '"kurze_einschaetzung": string}'
+    )
+
+
+def pruefe_zweite_quelle(
+    supabase,
+    chat_model,
+    thema_id: str,
+    thema_titel: str,
+    rohnachricht_text: str,
+    lauf_id: str | None = None,
+) -> None:
+    """Sucht gezielt nach einer unabhängigen zweiten Quelle für ein neu
+    angelegtes Thema (Ausschreibungs-Kriterium 5) und speichert das
+    Gemini-Ergebnis direkt an der Themen-Zeile. Findet sich keine Quelle,
+    bleibt das Feld NULL - nur eine Konsolen-Notiz, kein Fehler."""
+    treffer = hole_zweite_quelle_treffer(thema_titel)
+    if not treffer:
+        print(f'Thema "{thema_titel}": keine Suchergebnisse für Zweite-Quelle-Prüfung gefunden.')
+        return
+
+    prompt = baue_zweite_quelle_prompt(rohnachricht_text, treffer)
+    antwort = chat_model.generate_content(
+        prompt, generation_config={"response_mime_type": "application/json"}
+    )
+
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=CHAT_MODEL,
+        schritt="zweite_quelle_pruefung",
+        einheit_typ="tokens",
+        menge_input=antwort.usage_metadata.prompt_token_count,
+        menge_output=antwort.usage_metadata.candidates_token_count,
+        lauf_id=lauf_id,
+    )
+
+    ergebnis = json.loads(antwort.text)
+    bestaetigt = bool(ergebnis.get("bestaetigt"))
+    url = ergebnis.get("bestaetigende_quelle_url") if bestaetigt else None
+    einschaetzung = ergebnis.get("kurze_einschaetzung")
+
+    supabase.table("themen").update(
+        {
+            "zweite_quelle_bestaetigt": bestaetigt,
+            "zweite_quelle_url": url,
+            "zweite_quelle_einschaetzung": einschaetzung,
+        }
+    ).eq("id", thema_id).execute()
+
+    if bestaetigt:
+        print(f'Thema "{thema_titel}": Zweite Quelle bestätigt ({url}).')
+    else:
+        print(f'Thema "{thema_titel}": Zweite Quelle NICHT bestätigt ({einschaetzung}).')
+
+
 def verarbeite_akzeptierte_entscheidungen(lauf_id: str | None = None) -> list[dict]:
     """Ordnet akzeptierte, noch nicht verknüpfte Entscheidungen einem Thema zu.
 
@@ -707,8 +829,13 @@ def verarbeite_akzeptierte_entscheidungen(lauf_id: str | None = None) -> list[di
     verarbeite_rohnachricht.py verarbeiten (Embedding, Ähnlichkeitssuche,
     neues Thema oder Update) und trägt die entstandene/gefundene thema_id
     zurück in redaktion_entscheidungen ein.
+
+    Entsteht dabei ein NEUES Thema, läuft zusätzlich pruefe_zweite_quelle()
+    (Tavily/Exa-Suche + Gemini-Abgleich, siehe Modul-Docstring oben) - bei
+    Update/Duplikat nicht, um Kosten zu sparen.
     """
     supabase = hole_supabase_client()
+    chat_model = hole_chat_model()
 
     offene = hole_akzeptierte_offene_entscheidungen(supabase)
     if not offene:
@@ -726,6 +853,22 @@ def verarbeite_akzeptierte_entscheidungen(lauf_id: str | None = None) -> list[di
         supabase.table("redaktion_entscheidungen").update({"thema_id": verarbeitung["thema_id"]}).eq(
             "id", eintrag["entscheidung_id"]
         ).execute()
+
+        if verarbeitung["art"] == "neu":
+            try:
+                pruefe_zweite_quelle(
+                    supabase,
+                    chat_model,
+                    verarbeitung["thema_id"],
+                    verarbeitung["titel"],
+                    eintrag["rohnachricht_text"],
+                    lauf_id=lauf_id,
+                )
+            except Exception as e:
+                print(
+                    f'  WARNUNG: Zweite-Quelle-Prüfung für "{verarbeitung["titel"]}" '
+                    f"fehlgeschlagen ({type(e).__name__}: {e}), wird übersprungen."
+                )
 
         ergebnisse.append(
             {

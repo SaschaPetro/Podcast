@@ -11,12 +11,15 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
+import kosten_tracking
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
 EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_MODEL_KURZ = "gemini-embedding-001"
 EMBEDDING_DIM = 768
 
 
@@ -24,13 +27,24 @@ def hole_supabase_client():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 
-def erzeuge_embedding(text: str) -> list[float]:
+def erzeuge_embedding(supabase, text: str) -> list[float]:
     antwort = genai.embed_content(
         model=EMBEDDING_MODEL,
         content=text,
         task_type="retrieval_document",
         output_dimensionality=EMBEDDING_DIM,
     )
+
+    tokens = kosten_tracking.zaehle_tokens(EMBEDDING_MODEL, text)
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=EMBEDDING_MODEL_KURZ,
+        schritt="embedding_backfill",
+        einheit_typ="tokens",
+        menge_input=tokens,
+    )
+
     return antwort["embedding"]
 
 
@@ -67,7 +81,7 @@ def main():
             continue
 
         try:
-            embedding = erzeuge_embedding(text)
+            embedding = erzeuge_embedding(supabase, text)
             supabase.table("themen").update({"embedding": embedding}).eq("id", thema["id"]).execute()
             erfolgreich += 1
             anzeige_titel = titel[:60] + ("..." if len(titel) > 60 else "")

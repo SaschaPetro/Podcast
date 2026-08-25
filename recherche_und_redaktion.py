@@ -46,6 +46,7 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
+import kosten_tracking
 import verarbeite_rohnachricht
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -110,7 +111,9 @@ def hole_unverarbeitete_rohnachrichten(supabase, agent_id: str) -> list[dict]:
     return [r for r in rohnachrichten if r["id"] not in bereits_ids]
 
 
-def waehle_relevante_nachrichten(chat_model, systemkontext: str, rohnachrichten: list[dict]) -> list[dict]:
+def waehle_relevante_nachrichten(
+    supabase, chat_model, systemkontext: str, rohnachrichten: list[dict], lauf_id: str | None = None
+) -> list[dict]:
     nachrichten_block = "\n\n".join(
         f'Titel: {r["titel"]}\nText: {r["text"]}' for r in rohnachrichten
     )
@@ -128,6 +131,18 @@ def waehle_relevante_nachrichten(chat_model, systemkontext: str, rohnachrichten:
         prompt,
         generation_config={"response_mime_type": "application/json"},
     )
+
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=CHAT_MODEL,
+        schritt="recherche_auswahl",
+        einheit_typ="tokens",
+        menge_input=antwort.usage_metadata.prompt_token_count,
+        menge_output=antwort.usage_metadata.candidates_token_count,
+        lauf_id=lauf_id,
+    )
+
     auswahl = json.loads(antwort.text)
 
     nach_titel = {r["titel"]: r for r in rohnachrichten}
@@ -142,7 +157,9 @@ def waehle_relevante_nachrichten(chat_model, systemkontext: str, rohnachrichten:
     return ergebnis
 
 
-def fuehre_recherche_fuer_agenten_aus(supabase, chat_model, agent: dict, zusatz_anweisung: str | None) -> int:
+def fuehre_recherche_fuer_agenten_aus(
+    supabase, chat_model, agent: dict, zusatz_anweisung: str | None, lauf_id: str | None = None
+) -> int:
     name = agent["name"]
     print(f'Recherche-Agent "{name}": suche neue Rohnachrichten...')
 
@@ -152,7 +169,7 @@ def fuehre_recherche_fuer_agenten_aus(supabase, chat_model, agent: dict, zusatz_
         return 0
 
     systemkontext = baue_systemkontext(agent.get("fokus_beschreibung") or "", zusatz_anweisung)
-    auswahl = waehle_relevante_nachrichten(chat_model, systemkontext, rohnachrichten)
+    auswahl = waehle_relevante_nachrichten(supabase, chat_model, systemkontext, rohnachrichten, lauf_id=lauf_id)
 
     if not auswahl:
         print(f'-> Gemini hat für "{name}" keine relevanten Nachrichten ausgewählt.\n')
@@ -279,7 +296,9 @@ def baue_vorschlag_block(i: int, v: dict) -> str:
     )
 
 
-def entscheide_ueber_vorschlaege(chat_model, systemkontext: str, vorschlaege: list[dict]) -> list[dict]:
+def entscheide_ueber_vorschlaege(
+    supabase, chat_model, systemkontext: str, vorschlaege: list[dict], lauf_id: str | None = None
+) -> list[dict]:
     vorschlaege_block = "\n\n".join(baue_vorschlag_block(i, v) for i, v in enumerate(vorschlaege))
 
     prompt = (
@@ -300,6 +319,18 @@ def entscheide_ueber_vorschlaege(chat_model, systemkontext: str, vorschlaege: li
         prompt,
         generation_config={"response_mime_type": "application/json"},
     )
+
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=CHAT_MODEL,
+        schritt="redaktion_entscheidung",
+        einheit_typ="tokens",
+        menge_input=antwort.usage_metadata.prompt_token_count,
+        menge_output=antwort.usage_metadata.candidates_token_count,
+        lauf_id=lauf_id,
+    )
+
     entscheidungen = json.loads(antwort.text)
 
     ergebnis = []
@@ -335,7 +366,9 @@ def entscheide_ueber_vorschlaege(chat_model, systemkontext: str, vorschlaege: li
     return ergebnis
 
 
-def fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent: dict, zusatz_anweisung: str | None) -> int:
+def fuehre_redaktion_fuer_agenten_aus(
+    supabase, chat_model, agent: dict, zusatz_anweisung: str | None, lauf_id: str | None = None
+) -> int:
     name = agent["name"]
     print(f'Redaktions-Agent "{name}": hole offene Vorschläge...')
 
@@ -345,7 +378,9 @@ def fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent: dict, zusatz_
         return 0
 
     systemkontext = baue_systemkontext(agent.get("fokus_beschreibung") or "", zusatz_anweisung)
-    entscheidungen = entscheide_ueber_vorschlaege(chat_model, systemkontext, offene_vorschlaege)
+    entscheidungen = entscheide_ueber_vorschlaege(
+        supabase, chat_model, systemkontext, offene_vorschlaege, lauf_id=lauf_id
+    )
 
     if not entscheidungen:
         print("-> Gemini hat keine verwertbaren Entscheidungen geliefert.\n")
@@ -434,7 +469,9 @@ def baue_update_block(i: int, u: dict) -> str:
     )
 
 
-def entscheide_ueber_updates(chat_model, systemkontext: str, updates: list[dict]) -> list[dict]:
+def entscheide_ueber_updates(
+    supabase, chat_model, systemkontext: str, updates: list[dict], lauf_id: str | None = None
+) -> list[dict]:
     updates_block = "\n\n".join(baue_update_block(i, u) for i, u in enumerate(updates))
 
     prompt = (
@@ -454,6 +491,18 @@ def entscheide_ueber_updates(chat_model, systemkontext: str, updates: list[dict]
         prompt,
         generation_config={"response_mime_type": "application/json"},
     )
+
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=CHAT_MODEL,
+        schritt="update_reaktivierung",
+        einheit_typ="tokens",
+        menge_input=antwort.usage_metadata.prompt_token_count,
+        menge_output=antwort.usage_metadata.candidates_token_count,
+        lauf_id=lauf_id,
+    )
+
     entscheidungen = json.loads(antwort.text)
 
     ergebnis = []
@@ -476,7 +525,7 @@ def entscheide_ueber_updates(chat_model, systemkontext: str, updates: list[dict]
 
 
 def pruefe_updates_zu_gesendeten_themen(
-    supabase, chat_model, agent: dict, zusatz_anweisung: str | None
+    supabase, chat_model, agent: dict, zusatz_anweisung: str | None, lauf_id: str | None = None
 ) -> int:
     print("Prüfe Updates zu bereits gesendeten Themen...")
 
@@ -486,7 +535,7 @@ def pruefe_updates_zu_gesendeten_themen(
         return 0
 
     systemkontext = baue_systemkontext(agent.get("fokus_beschreibung") or "", zusatz_anweisung)
-    entscheidungen = entscheide_ueber_updates(chat_model, systemkontext, offene_updates)
+    entscheidungen = entscheide_ueber_updates(supabase, chat_model, systemkontext, offene_updates, lauf_id=lauf_id)
 
     if not entscheidungen:
         print("-> Gemini hat keine verwertbaren Entscheidungen geliefert.\n")
@@ -521,7 +570,7 @@ def pruefe_updates_zu_gesendeten_themen(
     return len(entscheidungen)
 
 
-def fuehre_recherche_agenten_aus(zusatz_anweisung: str | None = None) -> None:
+def fuehre_recherche_agenten_aus(zusatz_anweisung: str | None = None, lauf_id: str | None = None) -> None:
     """Lässt alle aktiven Recherche-Agenten über neue Rohnachrichten laufen."""
     supabase = hole_supabase_client()
     chat_model = hole_chat_model()
@@ -534,13 +583,15 @@ def fuehre_recherche_agenten_aus(zusatz_anweisung: str | None = None) -> None:
     print(f"{len(agenten)} aktive(r) Recherche-Agent(en) gefunden.\n")
 
     gesamt = sum(
-        fuehre_recherche_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung)
+        fuehre_recherche_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung, lauf_id=lauf_id)
         for agent in agenten
     )
     print(f"Fertig. Insgesamt {gesamt} neue Vorschläge gespeichert.")
 
 
-def fuehre_einzelnen_agenten_aus(agent_name: str, zusatz_anweisung: str | None = None) -> None:
+def fuehre_einzelnen_agenten_aus(
+    agent_name: str, zusatz_anweisung: str | None = None, lauf_id: str | None = None
+) -> None:
     """Führt genau einen Agenten (Recherche oder Redaktion) per Name aus."""
     supabase = hole_supabase_client()
 
@@ -557,9 +608,9 @@ def fuehre_einzelnen_agenten_aus(agent_name: str, zusatz_anweisung: str | None =
     chat_model = hole_chat_model()
 
     if agent.get("rolle") == "redaktion":
-        fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung)
+        fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung, lauf_id=lauf_id)
     else:
-        fuehre_recherche_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung)
+        fuehre_recherche_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung, lauf_id=lauf_id)
 
 
 def hole_aktiven_redaktionsagenten(supabase) -> dict | None:
@@ -575,7 +626,7 @@ def hole_aktiven_redaktionsagenten(supabase) -> dict | None:
     return agenten[0]
 
 
-def fuehre_redaktion_aus(zusatz_anweisung: str | None = None) -> None:
+def fuehre_redaktion_aus(zusatz_anweisung: str | None = None, lauf_id: str | None = None) -> None:
     """Lässt den aktiven Redaktions-Agenten über alle offenen Vorschläge entscheiden."""
     supabase = hole_supabase_client()
     chat_model = hole_chat_model()
@@ -585,10 +636,10 @@ def fuehre_redaktion_aus(zusatz_anweisung: str | None = None) -> None:
         print("Kein aktiver Redaktions-Agent gefunden.")
         return
 
-    fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung)
+    fuehre_redaktion_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung, lauf_id=lauf_id)
 
 
-def pruefe_update_reaktivierung(zusatz_anweisung: str | None = None) -> int:
+def pruefe_update_reaktivierung(zusatz_anweisung: str | None = None, lauf_id: str | None = None) -> int:
     """Lässt den aktiven Redaktions-Agenten prüfen, ob neue Updates zu bereits gesendeten Themen wichtig genug sind, um das Thema erneut aufzugreifen."""
     supabase = hole_supabase_client()
     chat_model = hole_chat_model()
@@ -598,7 +649,7 @@ def pruefe_update_reaktivierung(zusatz_anweisung: str | None = None) -> int:
         print("Kein aktiver Redaktions-Agent gefunden.")
         return 0
 
-    return pruefe_updates_zu_gesendeten_themen(supabase, chat_model, agent, zusatz_anweisung)
+    return pruefe_updates_zu_gesendeten_themen(supabase, chat_model, agent, zusatz_anweisung, lauf_id=lauf_id)
 
 
 def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:
@@ -648,7 +699,7 @@ def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:
     return ergebnis
 
 
-def verarbeite_akzeptierte_entscheidungen() -> list[dict]:
+def verarbeite_akzeptierte_entscheidungen(lauf_id: str | None = None) -> list[dict]:
     """Ordnet akzeptierte, noch nicht verknüpfte Entscheidungen einem Thema zu.
 
     Holt alle Entscheidungen mit akzeptiert=true und thema_id IS NULL, lässt
@@ -670,7 +721,7 @@ def verarbeite_akzeptierte_entscheidungen() -> list[dict]:
     for eintrag in offene:
         text = f'{eintrag["rohnachricht_titel"]}\n{eintrag["rohnachricht_text"]}'.strip()
 
-        verarbeitung = verarbeite_rohnachricht.verarbeite_text(text)
+        verarbeitung = verarbeite_rohnachricht.verarbeite_text(text, lauf_id=lauf_id)
 
         supabase.table("redaktion_entscheidungen").update({"thema_id": verarbeitung["thema_id"]}).eq(
             "id", eintrag["entscheidung_id"]

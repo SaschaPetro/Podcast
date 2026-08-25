@@ -6,11 +6,18 @@ import sys
 from deepgram import DeepgramClient
 from dotenv import load_dotenv
 from elevenlabs import ElevenLabs
+from supabase import create_client
+
+import kosten_tracking
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
+
+
+def hole_supabase_client():
+    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 DEEPGRAM_MODEL = "aura-2-julius-de"
 DEEPGRAM_SPEED_STANDARD = 1.15  # etwas schneller/lebendiger als normal (erlaubter Bereich: 0.7-1.5)
@@ -105,16 +112,36 @@ def _via_elevenlabs(text: str, dateipfad: str) -> None:
 
 
 def text_zu_audio(
-    text: str, dateipfad: str, anbieter: str = "deepgram", speed: float = DEEPGRAM_SPEED_STANDARD
+    text: str,
+    dateipfad: str,
+    anbieter: str = "deepgram",
+    speed: float = DEEPGRAM_SPEED_STANDARD,
+    lauf_id: str | None = None,
+    episode_id: str | None = None,
 ) -> None:
     print(f'Erzeuge Audio über "{anbieter}" -> {dateipfad}')
 
     if anbieter == "deepgram":
         _via_deepgram(text, dateipfad, speed=speed)
+        modell = DEEPGRAM_MODEL
     elif anbieter == "elevenlabs":
         _via_elevenlabs(text, dateipfad)
+        modell = ELEVENLABS_MODEL
     else:
         raise ValueError(f'Unbekannter Anbieter "{anbieter}". Erlaubt: "deepgram", "elevenlabs".')
+
+    # TTS hat kein Output-Token-Konzept - getrackt wird die Anzahl der
+    # übergebenen Zeichen als menge_input.
+    kosten_tracking.logge_api_kosten(
+        hole_supabase_client(),
+        dienst=anbieter,
+        modell=modell,
+        schritt="audio_synthese",
+        einheit_typ="zeichen",
+        menge_input=len(text),
+        lauf_id=lauf_id,
+        episode_id=episode_id,
+    )
 
     print(f"Audio gespeichert: {dateipfad}")
 

@@ -43,6 +43,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import generiere_audio
 import generiere_episode
+import kosten_tracking
 import recherche_und_redaktion
 import rss_einlesen
 
@@ -109,14 +110,16 @@ def markiere_uebersprungen(name: str, grund: str) -> dict:
     }
 
 
-def erzeuge_audio_fuer_episode(episode: dict) -> str:
+def erzeuge_audio_fuer_episode(episode: dict, lauf_id: str | None = None) -> str:
     episode_id = episode["id"]
     manuskripttext = episode["manuskripttext"]
 
     os.makedirs(AUDIO_ORDNER, exist_ok=True)
     dateipfad = f"{AUDIO_ORDNER}/episode_{episode_id}.mp3"
 
-    generiere_audio.text_zu_audio(manuskripttext, dateipfad, anbieter=AUDIO_ANBIETER)
+    generiere_audio.text_zu_audio(
+        manuskripttext, dateipfad, anbieter=AUDIO_ANBIETER, lauf_id=lauf_id, episode_id=episode_id
+    )
 
     supabase = hole_supabase_client()
     supabase.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).execute()
@@ -159,22 +162,48 @@ def formatiere_audio(dateipfad: str) -> str:
     return f"Audio gespeichert: {dateipfad}"
 
 
-def schreibe_lauf_protokoll(dauer_sekunden: int, erfolgreich: bool, fehler_details: str | None) -> None:
+def starte_lauf_protokoll() -> str | None:
+    """Legt den lauf_protokoll-Eintrag VOR dem eigentlichen Lauf an (mit
+    Platzhalterwerten) und gibt seine id zurück. Diese id wird als lauf_id an
+    alle Schritte durchgereicht, damit api_kosten-Einträge während des Laufs
+    darauf verweisen können (Fremdschlüssel-Constraint verlangt eine bereits
+    existierende Zeile). Wird am Ende über aktualisiere_lauf_protokoll() mit
+    den echten Werten befüllt."""
     try:
         supabase = hole_supabase_client()
-        supabase.table("lauf_protokoll").insert(
+        eintrag = (
+            supabase.table("lauf_protokoll")
+            .insert({"dauer_sekunden": 0, "erfolgreich": False})
+            .execute()
+            .data[0]
+        )
+        return eintrag["id"]
+    except Exception as e:
+        print(f"WARNUNG: Konnte Lauf-Protokoll nicht anlegen: {type(e).__name__}: {e}")
+        return None
+
+
+def aktualisiere_lauf_protokoll(
+    lauf_id: str | None, dauer_sekunden: int, erfolgreich: bool, fehler_details: str | None
+) -> None:
+    if lauf_id is None:
+        print("WARNUNG: Kein Lauf-Protokoll-Eintrag vorhanden, Abschluss wird nicht gespeichert.")
+        return
+    try:
+        supabase = hole_supabase_client()
+        supabase.table("lauf_protokoll").update(
             {
                 "dauer_sekunden": dauer_sekunden,
                 "erfolgreich": erfolgreich,
                 "fehler_details": fehler_details,
             }
-        ).execute()
-        print("Lauf-Protokoll gespeichert.")
+        ).eq("id", lauf_id).execute()
+        print("Lauf-Protokoll aktualisiert.")
     except Exception as e:
-        print(f"WARNUNG: Konnte Lauf-Protokoll nicht speichern: {type(e).__name__}: {e}")
+        print(f"WARNUNG: Konnte Lauf-Protokoll nicht aktualisieren: {type(e).__name__}: {e}")
 
 
-def drucke_zusammenfassung(schritte: list[dict], gesamt_dauer: float) -> None:
+def drucke_zusammenfassung(schritte: list[dict], gesamt_dauer: float, gesamtkosten_usd: float | None = None) -> None:
     print(f"\n{'#' * 70}")
     print("GESAMT-ZUSAMMENFASSUNG")
     print("#" * 70)
@@ -196,6 +225,8 @@ def drucke_zusammenfassung(schritte: list[dict], gesamt_dauer: float) -> None:
         f"{anzahl_fehlgeschlagen} fehlgeschlagen, {anzahl_uebersprungen} übersprungen."
     )
     print(f"Gesamtlaufzeit: {gesamt_dauer:.1f}s")
+    if gesamtkosten_usd is not None:
+        print(f"Geschätzte API-Kosten dieses Laufs: ${gesamtkosten_usd:.4f}")
     print("#" * 70)
 
 
@@ -203,26 +234,28 @@ def main() -> None:
     gesamt_start = time.monotonic()
     schritte: list[dict] = []
 
+    lauf_id = starte_lauf_protokoll()
+
     schritte.append(fuehre_schritt_aus("1/8 RSS-Feeds einlesen", rss_einlesen.main))
 
     schritte.append(
         fuehre_schritt_aus(
             "2/8 Recherche-Agenten ausführen",
-            recherche_und_redaktion.fuehre_recherche_agenten_aus,
+            lambda: recherche_und_redaktion.fuehre_recherche_agenten_aus(lauf_id=lauf_id),
         )
     )
 
     schritte.append(
         fuehre_schritt_aus(
             "3/8 Redaktion ausführen",
-            recherche_und_redaktion.fuehre_redaktion_aus,
+            lambda: recherche_und_redaktion.fuehre_redaktion_aus(lauf_id=lauf_id),
         )
     )
 
     schritte.append(
         fuehre_schritt_aus(
             "4/8 Akzeptierte Entscheidungen verarbeiten",
-            recherche_und_redaktion.verarbeite_akzeptierte_entscheidungen,
+            lambda: recherche_und_redaktion.verarbeite_akzeptierte_entscheidungen(lauf_id=lauf_id),
             formatiere_verarbeitung,
         )
     )
@@ -230,14 +263,14 @@ def main() -> None:
     schritte.append(
         fuehre_schritt_aus(
             "5/8 Update-Reaktivierung prüfen",
-            recherche_und_redaktion.pruefe_update_reaktivierung,
+            lambda: recherche_und_redaktion.pruefe_update_reaktivierung(lauf_id=lauf_id),
             formatiere_update_reaktivierung,
         )
     )
 
     schritt_manuskript = fuehre_schritt_aus(
         "6/8 Manuskript erzeugen",
-        generiere_episode.erstelle_episode,
+        lambda: generiere_episode.erstelle_episode(lauf_id=lauf_id),
         formatiere_episode,
     )
     schritte.append(schritt_manuskript)
@@ -253,7 +286,7 @@ def main() -> None:
         schritt_faktencheck = fuehre_schritt_aus(
             "7/8 Faktencheck",
             lambda: generiere_episode.pruefe_manuskript(
-                episode["id"], episode["manuskripttext"], episode["verwendete_themen"]
+                episode["id"], episode["manuskripttext"], episode["verwendete_themen"], lauf_id=lauf_id
             ),
             formatiere_faktencheck,
         )
@@ -278,13 +311,24 @@ def main() -> None:
         schritte.append(
             fuehre_schritt_aus(
                 "8/8 Audio erzeugen",
-                lambda: erzeuge_audio_fuer_episode(episode),
+                lambda: erzeuge_audio_fuer_episode(episode, lauf_id=lauf_id),
                 formatiere_audio,
             )
         )
 
     gesamt_dauer = time.monotonic() - gesamt_start
-    drucke_zusammenfassung(schritte, gesamt_dauer)
+
+    gesamtkosten_usd = None
+    try:
+        supabase = hole_supabase_client()
+        gesamtkosten_usd = kosten_tracking.hole_kosten_summe(supabase, lauf_id=lauf_id)
+        if episode is not None:
+            episode_kosten_usd = kosten_tracking.hole_kosten_summe(supabase, episode_id=episode["id"])
+            supabase.table("episoden").update({"kosten": episode_kosten_usd}).eq("id", episode["id"]).execute()
+    except Exception as e:
+        print(f"WARNUNG: Konnte API-Kosten nicht aggregieren: {type(e).__name__}: {e}")
+
+    drucke_zusammenfassung(schritte, gesamt_dauer, gesamtkosten_usd)
 
     fehlgeschlagene_oder_uebersprungene = [s for s in schritte if s["status"] != "erfolgreich"]
     erfolgreich = not any(s["status"] == "fehlgeschlagen" for s in schritte)
@@ -294,7 +338,7 @@ def main() -> None:
         else None
     )
 
-    schreibe_lauf_protokoll(round(gesamt_dauer), erfolgreich, fehler_details)
+    aktualisiere_lauf_protokoll(lauf_id, round(gesamt_dauer), erfolgreich, fehler_details)
 
 
 if __name__ == "__main__":

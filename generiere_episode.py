@@ -45,6 +45,8 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
+import kosten_tracking
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
@@ -250,10 +252,29 @@ def baue_format_hinweis(format: str, samstag: str, sonntag: str) -> str:
     return ""
 
 
+EROEFFNUNGSSIGNATUR_NACH_FORMAT = {
+    "montag": "Guten Morgen, willkommen zur Wochenend-Ausgabe eures KI-Updates.",
+    "freitag": "Guten Morgen, willkommen zur Wochenrückblick-Ausgabe eures KI-Updates.",
+}
+EROEFFNUNGSSIGNATUR_STANDARD = "Guten Morgen, das ist euer KI-Update."
+
+
+def baue_eroeffnungssignatur(format: str) -> str:
+    beispiel = EROEFFNUNGSSIGNATUR_NACH_FORMAT.get(format, EROEFFNUNGSSIGNATUR_STANDARD)
+    return (
+        f'Beginne JEDE Episode mit exakt diesem kurzen Muster (1 Satz, maximal 2 '
+        f'Sekunden Sprechzeit): "{beispiel}" oder einer minimalen, konsistenten '
+        "Variante davon. Geh danach OHNE Pause direkt in den Hook über - keine "
+        "weitere Anmoderation, keine Themenankündigung, keine Übergangsfloskel "
+        "zwischen Begrüßung und Hook."
+    )
+
+
 def baue_manuskript_prompt(
     persona: str,
     themen_block: str,
     zusatz_anweisung: str | None,
+    eroeffnungssignatur: str,
     format_hinweis: str = "",
     wochenrueckblick_block: str = "",
 ) -> str:
@@ -291,19 +312,32 @@ def baue_manuskript_prompt(
         'schon hatten"), bevor du die neue Entwicklung erzählst. Bei Themen ohne diesen '
         "Hinweis: keine solche Anmoderation.\n\n"
         "AUFBAU DER EPISODE:\n\n"
-        "- Kein \"Hallo zusammen\" oder \"hier sind die Meldungen des Tages\" als "
-        "Einstieg. Steig direkt beim ersten Thema mit einem Hook ein: eine "
-        "überraschende Frage, ein plastisches Szenario oder eine Zahl, die den "
-        "Hörer sofort betrifft. Keine Anmoderation davor.\n\n"
+        f"- {eroeffnungssignatur}\n\n"
+        "- Nach der Eröffnungssignatur (siehe oben) KEIN zusätzliches \"Hallo "
+        "zusammen\" oder \"hier sind die Meldungen des Tages\". Geh direkt aus "
+        "der Signatur in den Hook über: eine überraschende Frage, ein "
+        "plastisches Szenario oder eine Zahl, die den Hörer sofort betrifft. "
+        "Keine weitere Anmoderation zwischen Signatur und Hook.\n\n"
         "- Jedes Thema ist eine Mini-Geschichte mit drei Teilen:\n"
         "  1. Ein konkretes, vorstellbares Bild oder Szenario, das den Hörer "
-        "betrifft (\"Stell dir vor...\", \"Kennst du das...\", eine reale "
-        "Alltagssituation). Kein \"Unternehmen könnten betroffen sein\" - ein "
-        "konkretes Beispiel, das nachvollziehbar ist (darf erfunden/typisch sein, "
-        "muss aber plastisch sein).\n"
+        "betrifft - eine reale Alltagssituation, in die du direkt hineinspringst. "
+        "Kein \"Unternehmen könnten betroffen sein\" - ein konkretes Beispiel, "
+        "das nachvollziehbar ist (darf erfunden/typisch sein, muss aber "
+        "plastisch sein).\n"
         "  2. Was tatsächlich passiert ist - der Fakt, kurz und präzise.\n"
         "  3. Was das konkret für den Hörer heißt, mit einem klaren "
         "Handlungsschritt.\n\n"
+        "WICHTIG: Beginne einen Themenblock NICHT mit \"Stell dir vor...\" oder "
+        "\"Kennst du das...\" - das wurde in den letzten Folgen bereits mehrfach "
+        "verwendet und wirkt dadurch formelhaft. Variiere stattdessen bewusst: "
+        "manchmal eine überraschende Zahl direkt am Anfang, manchmal ein "
+        "Kontrast/eine Überraschung (\"Ihr würdet nicht erwarten, dass "
+        "ausgerechnet...\"), manchmal eine direkte Frage an den Hörer, manchmal "
+        "eine kurze plakative Behauptung, die dann aufgelöst wird, manchmal ein "
+        "Alltagsszenario, das direkt in der Situation beginnt ohne "
+        "Ankündigungsformel (z.B. \"Montagmorgen, das Telefon klingelt...\"). "
+        "\"Stell dir vor\" darf in einer ganzen Episode höchstens EINMAL "
+        "vorkommen, wenn überhaupt.\n\n"
         "- Schließe jeden Themenblock mit einer kurzen, direkten Frage an den "
         "Hörer ab, die zum Nachdenken oder Handeln anregt.\n\n"
         "- Wiederhole NICHT bei jedem Thema dasselbe Muster. Variiere den Aufbau: "
@@ -351,17 +385,35 @@ _IDS_ZEILE = re.compile(r"^VERWENDETE_THEMEN_IDS:\s*(.*)$", re.MULTILINE)
 
 
 def erstelle_manuskript(
+    supabase,
     chat_model,
     persona: str,
     themen_block: str,
     zusatz_anweisung: str | None,
+    eroeffnungssignatur: str,
     format_hinweis: str = "",
     wochenrueckblick_block: str = "",
+    lauf_id: str | None = None,
+    episode_id: str | None = None,
 ) -> tuple[str, list[str]]:
     prompt = baue_manuskript_prompt(
-        persona, themen_block, zusatz_anweisung, format_hinweis, wochenrueckblick_block
+        persona, themen_block, zusatz_anweisung, eroeffnungssignatur, format_hinweis, wochenrueckblick_block
     )
-    antwort = chat_model.generate_content(prompt).text.strip()
+    rohantwort = chat_model.generate_content(prompt)
+
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=CHAT_MODEL,
+        schritt="manuskript_erstellung",
+        einheit_typ="tokens",
+        menge_input=rohantwort.usage_metadata.prompt_token_count,
+        menge_output=rohantwort.usage_metadata.candidates_token_count,
+        lauf_id=lauf_id,
+        episode_id=episode_id,
+    )
+
+    antwort = rohantwort.text.strip()
 
     treffer = _IDS_ZEILE.search(antwort)
     if not treffer:
@@ -373,7 +425,9 @@ def erstelle_manuskript(
     return manuskripttext, verwendete_ids
 
 
-def erstelle_episode(zusatz_anweisung: str | None = None, format: str | None = None) -> dict | None:
+def erstelle_episode(
+    zusatz_anweisung: str | None = None, format: str | None = None, lauf_id: str | None = None
+) -> dict | None:
     supabase = hole_supabase_client()
     chat_model = hole_chat_model()
 
@@ -403,17 +457,39 @@ def erstelle_episode(zusatz_anweisung: str | None = None, format: str | None = N
         wochenrueckblick_block = baue_wochenrueckblick_block(themen_woche)
 
     format_hinweis = baue_format_hinweis(aktives_format, samstag, sonntag)
+    eroeffnungssignatur = baue_eroeffnungssignatur(aktives_format)
 
-    print("Erzeuge Manuskript...")
-    manuskripttext, verwendete_ids = erstelle_manuskript(
-        chat_model, persona, themen_block, zusatz_anweisung, format_hinweis, wochenrueckblick_block
-    )
-    print(f"-> Manuskript erzeugt ({len(manuskripttext)} Zeichen).\n")
-
+    # Episode-Zeile wird VOR dem Gemini-Call angelegt (noch ohne Manuskript),
+    # damit die Manuskript-Kosten (der teuerste Einzelschritt einer Episode)
+    # direkt mit episode_id in api_kosten geloggt werden koennen.
     jetzt = datetime.now(timezone.utc).isoformat()
     episode = (
         supabase.table("episoden")
-        .insert({"datum": jetzt, "manuskripttext": manuskripttext})
+        .insert({"datum": jetzt, "manuskripttext": None})
+        .execute()
+        .data[0]
+    )
+    episode_id = episode["id"]
+
+    print("Erzeuge Manuskript...")
+    manuskripttext, verwendete_ids = erstelle_manuskript(
+        supabase,
+        chat_model,
+        persona,
+        themen_block,
+        zusatz_anweisung,
+        eroeffnungssignatur,
+        format_hinweis,
+        wochenrueckblick_block,
+        lauf_id=lauf_id,
+        episode_id=episode_id,
+    )
+    print(f"-> Manuskript erzeugt ({len(manuskripttext)} Zeichen).\n")
+
+    episode = (
+        supabase.table("episoden")
+        .update({"manuskripttext": manuskripttext})
+        .eq("id", episode_id)
         .execute()
         .data[0]
     )
@@ -529,7 +605,9 @@ def baue_faktencheck_prompt(manuskripttext: str, quellen_block: str) -> str:
     )
 
 
-def pruefe_manuskript(episode_id: str, manuskripttext: str, themen: list[dict]) -> dict:
+def pruefe_manuskript(
+    episode_id: str, manuskripttext: str, themen: list[dict], lauf_id: str | None = None
+) -> dict:
     supabase = hole_supabase_client()
     chat_model = hole_chat_model()
 
@@ -541,6 +619,19 @@ def pruefe_manuskript(episode_id: str, manuskripttext: str, themen: list[dict]) 
     antwort = chat_model.generate_content(
         prompt, generation_config={"response_mime_type": "application/json"}
     )
+
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=CHAT_MODEL,
+        schritt="faktencheck",
+        einheit_typ="tokens",
+        menge_input=antwort.usage_metadata.prompt_token_count,
+        menge_output=antwort.usage_metadata.candidates_token_count,
+        lauf_id=lauf_id,
+        episode_id=episode_id,
+    )
+
     details = json.loads(antwort.text)
 
     zaehler = {"bestaetigt": 0, "widerspruch": 0, "nicht_belegt": 0}

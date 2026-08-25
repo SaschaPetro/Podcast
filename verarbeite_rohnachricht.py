@@ -18,12 +18,15 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
+import kosten_tracking
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
 EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_MODEL_KURZ = "gemini-embedding-001"
 EMBEDDING_DIM = 768
 CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
 SCHWELLENWERT = 0.85
@@ -33,7 +36,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 chat_model = genai.GenerativeModel(CHAT_MODEL)
 
 
-def erzeuge_embedding(text: str) -> list[float]:
+def erzeuge_embedding(text: str, lauf_id: str | None = None) -> list[float]:
     # Gleicher task_type wie im Backfill, da dasselbe Embedding sowohl für den
     # Ähnlichkeitsvergleich als auch (falls kein Treffer) für die Neuanlage
     # eines Themas verwendet wird.
@@ -43,6 +46,18 @@ def erzeuge_embedding(text: str) -> list[float]:
         task_type="retrieval_document",
         output_dimensionality=EMBEDDING_DIM,
     )
+
+    tokens = kosten_tracking.zaehle_tokens(EMBEDDING_MODEL, text)
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=EMBEDDING_MODEL_KURZ,
+        schritt="embedding_verarbeitung",
+        einheit_typ="tokens",
+        menge_input=tokens,
+        lauf_id=lauf_id,
+    )
+
     return antwort["embedding"]
 
 
@@ -60,7 +75,9 @@ def hole_letztes_update(thema_id: str) -> str | None:
     return None
 
 
-def pruefe_auf_neuigkeit(text: str, thema: dict, letztes_update: str | None) -> dict:
+def pruefe_auf_neuigkeit(
+    text: str, thema: dict, letztes_update: str | None, lauf_id: str | None = None
+) -> dict:
     stand = thema.get("zusammenfassung") or ""
     if letztes_update:
         stand += f"\nLetztes Update: {letztes_update}"
@@ -78,10 +95,22 @@ def pruefe_auf_neuigkeit(text: str, thema: dict, letztes_update: str | None) -> 
         prompt,
         generation_config={"response_mime_type": "application/json"},
     )
+
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=CHAT_MODEL,
+        schritt="neuigkeit_pruefung",
+        einheit_typ="tokens",
+        menge_input=antwort.usage_metadata.prompt_token_count,
+        menge_output=antwort.usage_metadata.candidates_token_count,
+        lauf_id=lauf_id,
+    )
+
     return json.loads(antwort.text)
 
 
-def verarbeite_text(text: str) -> dict:
+def verarbeite_text(text: str, lauf_id: str | None = None) -> dict:
     """Verarbeitet einen Rohtext und gibt zurück, welchem Thema er zugeordnet wurde.
 
     Rückgabe: {"art": "neu"|"update"|"duplikat", "thema_id": str, "titel": str}
@@ -89,7 +118,7 @@ def verarbeite_text(text: str) -> dict:
     anzeige = text if len(text) <= 80 else text[:80] + "..."
     print(f'Verarbeite Text: "{anzeige}"')
 
-    embedding = erzeuge_embedding(text)
+    embedding = erzeuge_embedding(text, lauf_id=lauf_id)
     print("Embedding erzeugt.")
 
     treffer = supabase.rpc(
@@ -117,7 +146,7 @@ def verarbeite_text(text: str) -> dict:
         )
         letztes_update = hole_letztes_update(thema_id)
 
-        pruefung = pruefe_auf_neuigkeit(text, thema_voll, letztes_update)
+        pruefung = pruefe_auf_neuigkeit(text, thema_voll, letztes_update, lauf_id=lauf_id)
 
         if pruefung.get("hat_neuigkeit"):
             neuigkeit_text = pruefung.get("neuigkeit_text")

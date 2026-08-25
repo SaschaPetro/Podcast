@@ -1,4 +1,14 @@
-"""Erzeugt eine Audiodatei aus Text, wahlweise über Deepgram oder ElevenLabs."""
+"""Erzeugt eine Audiodatei aus Text, wahlweise über Deepgram oder ElevenLabs.
+
+Wird zusätzlich eine episode_id übergeben, lädt text_zu_audio() die lokal
+gespeicherte MP3 danach automatisch in den öffentlichen Supabase-Storage-
+Bucket "episoden-audio" hoch (Dateiname = episode_id + ".mp3") und gibt die
+öffentliche URL zurück - schlägt der Upload fehl, wird das nur als
+Konsolen-Warnung gemeldet, kein Fehler; die lokale Datei bleibt in jedem
+Fall die verlässliche Ausgabe. Voraussetzung: Migration
+20260825204516_episoden_audio_url.sql muss angewendet sein, sowie der
+Bucket "episoden-audio" (öffentlich lesbar) muss existieren.
+"""
 import os
 import re
 import sys
@@ -19,6 +29,7 @@ load_dotenv()
 def hole_supabase_client():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
+AUDIO_BUCKET = "episoden-audio"
 DEEPGRAM_MODEL = "aura-2-julius-de"
 DEEPGRAM_SPEED_STANDARD = 1.15  # etwas schneller/lebendiger als normal (erlaubter Bereich: 0.7-1.5)
 DEEPGRAM_SPEED_MIN = 0.7
@@ -111,6 +122,30 @@ def _via_elevenlabs(text: str, dateipfad: str) -> None:
         f.write(audio_bytes)
 
 
+def lade_audio_hoch(supabase, dateipfad: str, episode_id: str) -> str | None:
+    """Lädt die lokale MP3-Datei zusätzlich in den Supabase-Storage-Bucket
+    AUDIO_BUCKET hoch (Dateiname = episode_id + ".mp3") und gibt die
+    öffentliche URL zurück. Schlägt der Upload fehl (Netzwerk, Bucket fehlt
+    etc.), wird NICHT geworfen - nur eine Konsolen-Warnung, die lokale Datei
+    bleibt in jedem Fall die verlässliche Ausgabe."""
+    pfad_im_bucket = f"{episode_id}.mp3"
+    try:
+        supabase.storage.from_(AUDIO_BUCKET).upload(
+            path=pfad_im_bucket,
+            file=dateipfad,
+            file_options={"content-type": "audio/mpeg", "upsert": "true"},
+        )
+        url = supabase.storage.from_(AUDIO_BUCKET).get_public_url(pfad_im_bucket)
+        print(f"-> Audio zusätzlich in Supabase Storage hochgeladen: {url}")
+        return url
+    except Exception as e:
+        print(
+            f"WARNUNG: Upload nach Supabase Storage fehlgeschlagen "
+            f"({type(e).__name__}: {e}) - lokale Datei bleibt maßgeblich."
+        )
+        return None
+
+
 def text_zu_audio(
     text: str,
     dateipfad: str,
@@ -118,7 +153,7 @@ def text_zu_audio(
     speed: float = DEEPGRAM_SPEED_STANDARD,
     lauf_id: str | None = None,
     episode_id: str | None = None,
-) -> None:
+) -> str | None:
     print(f'Erzeuge Audio über "{anbieter}" -> {dateipfad}')
 
     if anbieter == "deepgram":
@@ -144,6 +179,12 @@ def text_zu_audio(
     )
 
     print(f"Audio gespeichert: {dateipfad}")
+
+    audio_url = None
+    if episode_id:
+        audio_url = lade_audio_hoch(hole_supabase_client(), dateipfad, episode_id)
+
+    return audio_url
 
 
 if __name__ == "__main__":

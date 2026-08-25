@@ -118,21 +118,24 @@ def markiere_uebersprungen(name: str, grund: str) -> dict:
     }
 
 
-def erzeuge_audio_fuer_episode(episode: dict, lauf_id: str | None = None) -> str:
+def erzeuge_audio_fuer_episode(episode: dict, lauf_id: str | None = None) -> dict:
     episode_id = episode["id"]
     manuskripttext = episode["manuskripttext"]
 
     os.makedirs(AUDIO_ORDNER, exist_ok=True)
     dateipfad = f"{AUDIO_ORDNER}/episode_{episode_id}.mp3"
 
-    generiere_audio.text_zu_audio(
+    audio_url = generiere_audio.text_zu_audio(
         manuskripttext, dateipfad, anbieter=AUDIO_ANBIETER, lauf_id=lauf_id, episode_id=episode_id
     )
 
     supabase = hole_supabase_client()
-    supabase.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).execute()
+    aktualisierung = {"audio_pfad": dateipfad}
+    if audio_url:
+        aktualisierung["audio_url"] = audio_url
+    supabase.table("episoden").update(aktualisierung).eq("id", episode_id).execute()
 
-    return dateipfad
+    return {"dateipfad": dateipfad, "audio_url": audio_url}
 
 
 def formatiere_verarbeitung(ergebnisse: list[dict] | None) -> str:
@@ -166,8 +169,10 @@ def formatiere_faktencheck(ergebnis: dict | None) -> str:
     )
 
 
-def formatiere_audio(dateipfad: str) -> str:
-    return f"Audio gespeichert: {dateipfad}"
+def formatiere_audio(ergebnis: dict) -> str:
+    if ergebnis["audio_url"]:
+        return f'Audio gespeichert: {ergebnis["dateipfad"]} (öffentlich: {ergebnis["audio_url"]})'
+    return f'Audio gespeichert: {ergebnis["dateipfad"]} (Supabase-Upload fehlgeschlagen/übersprungen)'
 
 
 def formatiere_rhetorik(ergebnis: dict) -> str:

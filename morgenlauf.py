@@ -55,7 +55,7 @@ import rhetorik_check
 
 load_dotenv()
 
-AUDIO_ANBIETER = "deepgram"
+AUDIO_ANBIETER = "gemini_tts"  # Fallback: "deepgram" (siehe generiere_audio.py)
 AUDIO_ORDNER = "output"
 
 

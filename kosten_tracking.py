@@ -30,9 +30,16 @@ PREISTABELLE = {
         "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
         "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
         "gemini-embedding-001": {"input": 0.15, "output": 0.0},
-        # Aktuell in .env eingetragenes Modell (GEMINI_MODEL_NAME) - Preis
-        # NICHT verifiziert, bitte sobald bekannt durch den echten Wert ersetzen:
+        # Standard-"schnelles Modell" seit 2026-08-26 (gemini-2.5-flash-lite
+        # wurde von Google fuer neue Nutzer abgeschaltet) - Preis NICHT
+        # verifiziert, bitte sobald bekannt durch den echten Wert ersetzen:
         "gemini-3.5-flash-lite": {"input": 0.10, "output": 0.40},
+        # UEBERGANGS-Qualitaetsmodell seit 2026-08-26 (gemini-2.5-pro
+        # abgeschaltet, Nachfolger gemini-3.1-pro-preview braucht Billing,
+        # siehe modelle.py) - Preis NICHT verifiziert, nur aus einer
+        # Websuche (2026-08-26), unbedingt vor Produktiveinsatz gegen die
+        # offizielle Preisseite pruefen:
+        "gemini-3.5-flash": {"input": 1.50, "output": 9.00},
     },
     "deepgram": {
         # USD pro 1 Mio. Zeichen (Aura-2 TTS)
@@ -42,6 +49,13 @@ PREISTABELLE = {
         # USD pro 1 Mio. Zeichen - stark tarifabhängig, hier nur ein grober
         # Richtwert. Bitte gegen den tatsächlich gebuchten Tarif prüfen!
         "eleven_multilingual_v2": {"input": 180.00, "output": 0.0},
+    },
+    "gemini_tts": {
+        # Gemini 3.1 Flash TTS (Preview) - USD pro 1 Mio. Tokens, NICHT
+        # Zeichen. Input = Text-Tokens, Output = Audio-Tokens (Audio wird mit
+        # 25 Tokens/Sekunde verrechnet, siehe generiere_audio.py). Stand
+        # 2026-08-26 recherchiert: https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-tts-preview
+        "gemini-3.1-flash-tts-preview": {"input": 1.00, "output": 20.00},
     },
 }
 

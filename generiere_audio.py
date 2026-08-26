@@ -1,4 +1,4 @@
-"""Erzeugt eine Audiodatei aus Text, wahlweise über Deepgram oder ElevenLabs.
+"""Erzeugt eine MP3-Audiodatei über Gemini TTS, Deepgram oder ElevenLabs.
 
 Wird zusätzlich eine episode_id übergeben, lädt text_zu_audio() die lokal
 gespeicherte MP3 danach automatisch in den öffentlichen Supabase-Storage-
@@ -14,11 +14,13 @@ import re
 import sys
 import tempfile
 
+import lameenc
 from deepgram import DeepgramClient
 from dotenv import load_dotenv
 from elevenlabs import ElevenLabs
 from supabase import create_client
 
+from gemini_client import erzeuge_tts_audio
 import kosten_tracking
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -46,6 +48,31 @@ DEEPGRAM_SPEED_SPRACHEN = ("en",)
 DEEPGRAM_TEXT_LIMIT = 2000
 ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
+
+# Gemini 3.1 Flash TTS (Preview, Stand 2026-08-26 recherchiert:
+# https://ai.google.dev/gemini-api/docs/speech-generation,
+# https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-tts-preview).
+# Seit 2026-08-26 Standard-Anbieter (siehe text_zu_audio/morgenlauf.py) -
+# Deepgram bleibt als Fallback über anbieter="deepgram" nutzbar.
+GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+# "Charon" = laut Google als "Informative" beschrieben - passt zu einem
+# sachlichen Nachrichtenformat. Alternativen fürs Probehören: "Rasalgethi"
+# (ebenfalls "Informative") oder "Sadaltager" ("Knowledgeable").
+GEMINI_TTS_VOICE = "Charon"
+# Antwort ist rohes PCM: 24kHz, 16-bit, mono - wird direkt im Speicher (ohne
+# WAV-Zwischendatei) über lameenc zu MP3 konvertiert, siehe _pcm_zu_mp3().
+# lameenc statt ffmpeg/pydub: reines Python-Wheel (bindet den LAME-Encoder
+# ein), kein System-Binary nötig - ffmpeg ist weder auf GitHub-Actions
+# ubuntu-latest-Runnern noch lokal vorinstalliert (Stand 2026-08-26 geprüft).
+GEMINI_TTS_SAMPLE_RATE = 24000
+GEMINI_TTS_MP3_BITRATE = 128  # kbps, gleicher Wert wie ELEVENLABS_MODEL-Output
+# Kein festes Zeichenlimit dokumentiert, aber ein Kontextfenster von 32k
+# Tokens (8192 Input/16384 Output) sowie der Hinweis, dass die Qualität bei
+# durchgehenden Ausgaben über wenigen Minuten driften kann. 3000 Zeichen
+# entsprechen bei deutscher Sprechgeschwindigkeit ca. 2-3 Minuten Audio -
+# bleibt mit großem Puffer unter beiden Token-Grenzen und in der von Google
+# empfohlenen Länge. Gleiche Chunking-Logik wie bei Deepgram (_teile_text).
+GEMINI_TTS_TEXT_LIMIT = 3000
 
 
 def _unterstuetzt_speed(model: str) -> bool:
@@ -191,6 +218,59 @@ def _via_elevenlabs(text: str, dateipfad: str) -> None:
     _schreibe_atomar(dateipfad, audio_bytes)
 
 
+def _pcm_zu_mp3(pcm_bytes: bytes) -> bytes:
+    """Kodiert rohe PCM-Daten (siehe GEMINI_TTS_SAMPLE_RATE, 16-bit/mono)
+    direkt im Speicher zu MP3 - keine WAV-Zwischendatei, kein ffmpeg."""
+    if not pcm_bytes:
+        raise RuntimeError("Gemini TTS lieferte leere PCM-Daten; MP3-Konvertierung abgebrochen.")
+    if len(pcm_bytes) % 2:
+        raise RuntimeError(
+            "Gemini TTS lieferte unvollständige 16-Bit-PCM-Daten; "
+            "MP3-Konvertierung abgebrochen."
+        )
+
+    encoder = lameenc.Encoder()
+    encoder.set_bit_rate(GEMINI_TTS_MP3_BITRATE)
+    encoder.set_in_sample_rate(GEMINI_TTS_SAMPLE_RATE)
+    encoder.set_channels(1)
+    encoder.set_quality(2)  # 2 = hohe Qualität (LAME: 0=beste/langsamste .. 9=schnellste)
+    mp3_bytes = encoder.encode(pcm_bytes)
+    mp3_bytes += encoder.flush()
+    mp3_bytes = bytes(mp3_bytes)
+    if not mp3_bytes:
+        raise RuntimeError("MP3-Konvertierung lieferte keine Daten.")
+    return mp3_bytes
+
+
+def _via_gemini_tts(text: str, dateipfad: str) -> tuple[int, int]:
+    """Erzeugt Audio über Gemini TTS und schreibt direkt eine MP3-Datei -
+    das rohe PCM aus der API wird vollständig im Speicher zu MP3 konvertiert
+    (_pcm_zu_mp3), es entsteht nie eine WAV-Zwischendatei auf der Platte.
+    Gibt (input_tokens, output_tokens) für die Kostenerfassung zurück -
+    echte Werte aus der API-Antwort (usage_metadata), keine Schätzung."""
+    chunks = _teile_text(text, max_laenge=GEMINI_TTS_TEXT_LIMIT)
+    if len(chunks) > 1:
+        print(
+            f"Text hat {len(text)} Zeichen (Richtwert pro Anfrage: {GEMINI_TTS_TEXT_LIMIT}), "
+            f"wird in {len(chunks)} Teile aufgeteilt."
+        )
+
+    pcm_teile = []
+    input_tokens = 0
+    output_tokens = 0
+    for chunk in chunks:
+        pcm, chunk_input_tokens, chunk_output_tokens = erzeuge_tts_audio(
+            GEMINI_TTS_MODEL, chunk, GEMINI_TTS_VOICE
+        )
+        pcm_teile.append(pcm)
+        input_tokens += chunk_input_tokens
+        output_tokens += chunk_output_tokens
+
+    mp3_bytes = _pcm_zu_mp3(b"".join(pcm_teile))
+    _schreibe_atomar(dateipfad, mp3_bytes)
+    return input_tokens, output_tokens
+
+
 def lade_audio_hoch(supabase, dateipfad: str, episode_id: str) -> str | None:
     """Lädt die lokale MP3-Datei zusätzlich in den Supabase-Storage-Bucket
     AUDIO_BUCKET hoch (Dateiname = episode_id + ".mp3") und gibt die
@@ -218,7 +298,7 @@ def lade_audio_hoch(supabase, dateipfad: str, episode_id: str) -> str | None:
 def text_zu_audio(
     text: str,
     dateipfad: str,
-    anbieter: str = "deepgram",
+    anbieter: str = "gemini_tts",
     speed: float = DEEPGRAM_SPEED_STANDARD,
     lauf_id: str | None = None,
     episode_id: str | None = None,
@@ -231,21 +311,43 @@ def text_zu_audio(
     elif anbieter == "elevenlabs":
         _via_elevenlabs(text, dateipfad)
         modell = ELEVENLABS_MODEL
+    elif anbieter == "gemini_tts":
+        gemini_tts_tokens = _via_gemini_tts(text, dateipfad)
+        modell = GEMINI_TTS_MODEL
     else:
-        raise ValueError(f'Unbekannter Anbieter "{anbieter}". Erlaubt: "deepgram", "elevenlabs".')
+        raise ValueError(
+            f'Unbekannter Anbieter "{anbieter}". Erlaubt: "deepgram", "elevenlabs", "gemini_tts".'
+        )
 
-    # TTS hat kein Output-Token-Konzept - getrackt wird die Anzahl der
-    # übergebenen Zeichen als menge_input.
-    kosten_tracking.logge_api_kosten(
-        hole_supabase_client(),
-        dienst=anbieter,
-        modell=modell,
-        schritt="audio_synthese",
-        einheit_typ="zeichen",
-        menge_input=len(text),
-        lauf_id=lauf_id,
-        episode_id=episode_id,
-    )
+    if anbieter == "gemini_tts":
+        # Gemini TTS wird pro Token abgerechnet (Text-Input UND Audio-Output),
+        # nicht pro Zeichen wie Deepgram/ElevenLabs - siehe PREISTABELLE.
+        # Echte Tokenzahlen aus der API-Antwort, siehe _via_gemini_tts.
+        text_tokens, audio_tokens = gemini_tts_tokens
+        kosten_tracking.logge_api_kosten(
+            hole_supabase_client(),
+            dienst=anbieter,
+            modell=modell,
+            schritt="audio_synthese",
+            einheit_typ="tokens",
+            menge_input=text_tokens,
+            menge_output=audio_tokens,
+            lauf_id=lauf_id,
+            episode_id=episode_id,
+        )
+    else:
+        # TTS hat sonst kein Output-Token-Konzept - getrackt wird die Anzahl
+        # der übergebenen Zeichen als menge_input.
+        kosten_tracking.logge_api_kosten(
+            hole_supabase_client(),
+            dienst=anbieter,
+            modell=modell,
+            schritt="audio_synthese",
+            einheit_typ="zeichen",
+            menge_input=len(text),
+            lauf_id=lauf_id,
+            episode_id=episode_id,
+        )
 
     print(f"Audio gespeichert: {dateipfad}")
 

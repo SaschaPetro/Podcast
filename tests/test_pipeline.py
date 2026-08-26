@@ -19,7 +19,7 @@ class ModellzuordnungTests(unittest.TestCase):
         import modelle
 
         with patch.dict(os.environ, {"GEMINI_FAST_MODEL": ""}):
-            self.assertEqual(modelle.schnelles_modell(), "gemini-2.5-flash-lite")
+            self.assertEqual(modelle.schnelles_modell(), modelle.STANDARD_SCHNELLES_MODELL)
 
 
 class GeminiClientTests(unittest.TestCase):
@@ -41,6 +41,23 @@ class GeminiClientTests(unittest.TestCase):
         self.assertEqual(kwargs["contents"], "Prompt")
         self.assertEqual(kwargs["config"].response_mime_type, "application/json")
         self.assertEqual(kwargs["config"].max_output_tokens, 123)
+
+    def test_tts_liefert_pcm_und_usage(self):
+        from gemini_client import erzeuge_tts_audio
+
+        client = MagicMock()
+        inline_data = MagicMock(data=b"\x00\x00\x01\x00")
+        client.models.generate_content.return_value = MagicMock(
+            candidates=[MagicMock(content=MagicMock(parts=[MagicMock(inline_data=inline_data)]))],
+            usage_metadata=MagicMock(prompt_token_count=12, candidates_token_count=34),
+        )
+        with patch("gemini_client._neuer_client", return_value=client):
+            pcm, input_tokens, output_tokens = erzeuge_tts_audio("modell", "Text", "Charon")
+
+        self.assertEqual(pcm, b"\x00\x00\x01\x00")
+        self.assertEqual((input_tokens, output_tokens), (12, 34))
+        config = client.models.generate_content.call_args.kwargs["config"]
+        self.assertEqual(config.response_modalities, ["AUDIO"])
 
 
 class PromptTests(unittest.TestCase):
@@ -105,6 +122,64 @@ class TtsTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.audio._via_deepgram(("Ein kurzer Satz. " * 150) + "Letzter Satz.", str(ziel))
             self.assertFalse(ziel.exists())
+
+    def test_gemini_tts_schreibt_mp3_und_summiert_tokens(self):
+        pcm = b"\x00\x00" * 2400
+        antworten = [(pcm, 10, 20), (pcm, 11, 21)]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(self.audio, "_teile_text", return_value=["Teil eins.", "Teil zwei."]),
+            patch.object(self.audio, "erzeuge_tts_audio", side_effect=antworten),
+        ):
+            ziel = Path(tmp) / "episode.mp3"
+            tokens = self.audio._via_gemini_tts("Text", str(ziel))
+
+            self.assertEqual(tokens, (21, 41))
+            self.assertTrue(ziel.exists())
+            self.assertGreater(ziel.stat().st_size, 0)
+            self.assertTrue(ziel.read_bytes().startswith((b"ID3", b"\xff\xfb", b"\xff\xf3")))
+
+    def test_gemini_konvertierungsfehler_veroeffentlicht_keine_datei(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(self.audio, "_teile_text", return_value=["Text"]),
+            patch.object(self.audio, "erzeuge_tts_audio", return_value=(b"", 1, 1)),
+        ):
+            ziel = Path(tmp) / "episode.mp3"
+            with self.assertRaisesRegex(RuntimeError, "leere PCM-Daten"):
+                self.audio._via_gemini_tts("Text", str(ziel))
+            self.assertFalse(ziel.exists())
+
+    def test_deepgram_bleibt_als_fallback_erhalten(self):
+        with (
+            patch.object(self.audio, "_via_deepgram") as deepgram,
+            patch.object(self.audio.kosten_tracking, "logge_api_kosten"),
+            patch.object(self.audio, "hole_supabase_client", return_value=MagicMock()),
+        ):
+            self.audio.text_zu_audio("Text", "episode.mp3", anbieter="deepgram")
+        deepgram.assert_called_once()
+
+    def test_gemini_ist_standard_und_protokolliert_beide_tokenmengen(self):
+        supabase = MagicMock()
+        with (
+            patch.object(self.audio, "_via_gemini_tts", return_value=(12, 34)) as gemini,
+            patch.object(self.audio, "hole_supabase_client", return_value=supabase),
+            patch.object(self.audio.kosten_tracking, "logge_api_kosten") as logge_kosten,
+        ):
+            self.audio.text_zu_audio("Text", "episode.mp3")
+
+        gemini.assert_called_once_with("Text", "episode.mp3")
+        logge_kosten.assert_called_once_with(
+            supabase,
+            dienst="gemini_tts",
+            modell=self.audio.GEMINI_TTS_MODEL,
+            schritt="audio_synthese",
+            einheit_typ="tokens",
+            menge_input=12,
+            menge_output=34,
+            lauf_id=None,
+            episode_id=None,
+        )
 
 
 class OrchestrierungsTests(unittest.TestCase):

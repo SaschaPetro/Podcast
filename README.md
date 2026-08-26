@@ -34,12 +34,14 @@ flowchart TD
     FC -->|ja: pruefung_fehlgeschlagen| STOP["Audio übersprungen,<br/>manuelle Prüfung nötig"]
     TTS --> MP3["output/episode_&lt;id&gt;.mp3"]
     MP3 -.->|audio_pfad| EP
+    MP3 -->|"Supabase Storage-Upload<br/>(oeffentlicher Bucket)"| AUDIOURL["oeffentliche URL"]
+    AUDIOURL -.->|audio_url| EP
 
     EP -->|"alle 4 Episoden"| RHET["Rhetorik-Agent<br/>Rhetorik-Check"]
     RHET --> RB[("rhetorik_bewertungen")]
 ```
 
-**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat) - entsteht dabei ein neues Thema, sucht zusätzlich eine Zweite-Quelle-Verifikation (Tavily/Exa + Gemini) nach unabhängiger Bestätigung des Kernfakts. Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt das Manuskript; die dabei verwendeten Original-Quellen werden dauerhaft in `episoden_quellen` festgehalten. Bevor daraus Audio erzeugt wird, prüft ein Faktencheck-Schritt das Manuskript gegen die Original-Quellen; nur bei Freigabe wird die MP3 erzeugt. Unabhängig davon prüft alle 4 Episoden ein Rhetorik-Agent die zuletzt erschienenen Manuskripte auf Wiederholungen und die Balance zwischen Storytelling und Nachrichtenkern - rein informativ, ohne automatische Änderung.
+**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat) - entsteht dabei ein neues Thema, sucht zusätzlich eine Zweite-Quelle-Verifikation (Tavily/Exa + Gemini) nach unabhängiger Bestätigung des Kernfakts. Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt das Manuskript; die dabei verwendeten Original-Quellen werden dauerhaft in `episoden_quellen` festgehalten. Bevor daraus Audio erzeugt wird, prüft ein Faktencheck-Schritt das Manuskript gegen die Original-Quellen; nur bei Freigabe wird die MP3 erzeugt (als allererste Zeile im Manuskript steht dabei immer ein fester KI-Kennzeichnungshinweis, siehe Abschnitt 6). Die fertige MP3 wird lokal gespeichert UND zusätzlich in einen öffentlichen Supabase-Storage-Bucket hochgeladen, damit eine stabile URL unabhängig von GitHub-Actions-Artefakten oder dem lokalen Rechner existiert. Unabhängig davon prüft alle 4 Episoden ein Rhetorik-Agent die zuletzt erschienenen Manuskripte auf Wiederholungen und die Balance zwischen Storytelling und Nachrichtenkern - rein informativ, ohne automatische Änderung.
 
 ## 3. Die KI-Agenten
 
@@ -164,7 +166,7 @@ Oder über die Kommandozeile: `python rhetorik_check.py`. Läuft nur tatsächlic
 | `themen` | Konsolidierte Themen (nach Dedup) | `titel`, `zusammenfassung`, `status` (neu / in Verfolgung / gesendet), `erster_kontaktzeitpunkt`, `letztes_update`, `embedding` (vector(768), Gemini), `zweite_quelle_bestaetigt`/`-url`/`-einschaetzung` (nur bei neu angelegten Themen befüllt, siehe Abschnitt 5) | - |
 | `themen_updates` | Historie neuer Fakten zu einem bestehenden Thema | `thema_id`, `was_neu`, `datum` | `thema_id` → `themen.id` (cascade delete) |
 | `redaktion_update_entscheidungen` | Redaktions-Entscheidungen über Updates zu bereits gesendeten Themen | `update_id`, `thema_id`, `wieder_aufgenommen`, `begruendung`, `entschieden_am` | `update_id` → `themen_updates.id`; `thema_id` → `themen.id` (cascade delete) |
-| `episoden` | Fertige Episoden | `datum`, `manuskripttext`, `audio_pfad`, `kosten` (aktuell nirgends befüllt), `status` (`ungeprueft`/`freigegeben`/`pruefung_fehlgeschlagen`), `faktencheck_ergebnis` (jsonb: Zähler + Detail-Liste) | - |
+| `episoden` | Fertige Episoden | `datum`, `manuskripttext`, `audio_pfad` (lokaler Pfad), `audio_url` (öffentliche Supabase-Storage-URL, nullable - NULL falls Upload fehlschlägt), `kosten` (aktuell nirgends befüllt), `status` (`ungeprueft`/`freigegeben`/`pruefung_fehlgeschlagen`), `faktencheck_ergebnis` (jsonb: Zähler + Detail-Liste) | - |
 | `episoden_quellen` | Dauerhafte Verknüpfung Episode → Original-Rohnachrichten der tatsächlich verwendeten Themen | `episode_id`, `thema_id` (nullable), `rohnachricht_id` (nullable), `quelle_name`, `quelle_url`, `titel` | `episode_id` → `episoden.id`; `thema_id` → `themen.id`; `rohnachricht_id` → `rohnachrichten.id` |
 | `rhetorik_bewertungen` | Ergebnis der periodischen Rhetorik-Prüfung (alle 4 Episoden) | `zeitstempel`, `episode_ids` (uuid-Array), `gesamteinschaetzung`, `konkrete_probleme` (jsonb: Liste `{problem, beispiel_zitat, vorschlag}`) | - (kein FK auf `episoden`, `episode_ids` ist ein reines Array) |
 
@@ -192,10 +194,12 @@ Der komplette Struktur-Prompt liegt in **`generiere_episode.py`**, Funktion **`b
 |---|---|
 | `THEMENAUSWAHL` | Wie viele Themen ausgewählt werden (aktuell 5-6) |
 | `LÄNGE` | Ziel-Wortzahl (aktuell 1400-1600 Wörter) und wie diese erreicht wird (Tiefe statt mehr Themen) |
-| `AUFBAU DER EPISODE` | Hook-Einstieg, Drei-Teile-Struktur pro Thema, Übergänge zwischen Themen, Variation von Satzenden/-anfängen und Übergangsformulierungen, Abschluss |
+| `AUFBAU DER EPISODE` | KI-Kennzeichnungshinweis ganz am Anfang (siehe unten), Hook-Einstieg, Drei-Teile-Struktur pro Thema, Übergänge zwischen Themen (Konstruktion muss bei jedem Themenwechsel variieren, kein Muster doppelt in derselben Episode), Variation von Satzenden/-anfängen, Abschluss |
 | `HUMOR` | Ob/wo trockener Humor eingebaut wird, und wo explizit nicht (ernste Themen) |
 | `FORTSETZUNGEN` | Themen mit Status `in Verfolgung`, die per Update-Check wiederaufgenommen wurden, bekommen eine kurze Anmoderation ("Erinnert ihr euch an...", "Update zu einer Geschichte, die wir schon hatten"), bevor die neue Entwicklung erzählt wird - bei Themen ohne diesen Hinweis nicht |
 | `BESONDERHEIT DIESER FOLGE` (nur Montag/Freitag) | Wird von `baue_format_hinweis` erzeugt und nur eingefügt, wenn `erstelle_episode` per Wochentag-Erkennung (oder per `format`-Parameter) das Montag- oder Freitag-Format ausgewählt hat - siehe unten |
+
+**KI-Kennzeichnungshinweis (Pflicht, Art. 50 EU AI Act):** Jede Episode muss zu Beginn offenlegen, dass sie KI-generiert ist. `baue_ki_kennzeichnung_hinweis()` weist Gemini an, als ALLERERSTE Zeile des Manuskripts wortwörtlich und unverändert den festen Satz aus der Konstante `KI_KENNZEICHNUNG_SATZ` auszugeben ("Kurzer Hinweis vorweg: Diese Folge wurde vollautomatisch mit Künstlicher Intelligenz erstellt - Recherche, Text und Stimme."), bevor die Eröffnungssignatur und der Hook folgen - gilt formatunabhängig für Standard/Montag/Freitag. Der Wortlaut wird bewusst NICHT der freien Formulierung von Gemini überlassen (Prompt gibt den exakten Satz vor), damit er zuverlässig gleich bleibt. Zum Ändern: `KI_KENNZEICHNUNG_SATZ` in `generiere_episode.py` anpassen.
 
 **Montag-/Freitag-Sonderformate:** `erstelle_episode(zusatz_anweisung=None, format=None)` erkennt automatisch über `bestimme_format` den aktuellen Wochentag (Montag/Freitag laufen unter Sonderformat, Di-Do wie bisher als `"standard"`) und lässt sich zum Testen per `format="montag"`/`"freitag"`/`"standard"` erzwingen, egal welcher Wochentag gerade real ist.
 
@@ -257,9 +261,15 @@ episode_id = "..."  # id aus der Konsolen-Ausgabe von generiere_episode.py
 text = sb.table("episoden").select("manuskripttext").eq("id", episode_id).limit(1).execute().data[0]["manuskripttext"]
 
 dateipfad = f"output/episode_{episode_id}.mp3"
-text_zu_audio(text, dateipfad)
-sb.table("episoden").update({"audio_pfad": dateipfad}).eq("id", episode_id).execute()
+# episode_id mit uebergeben, sonst wird NUR lokal gespeichert, ohne Supabase-Storage-Upload:
+audio_url = text_zu_audio(text, dateipfad, episode_id=episode_id)
+aktualisierung = {"audio_pfad": dateipfad}
+if audio_url:
+    aktualisierung["audio_url"] = audio_url
+sb.table("episoden").update(aktualisierung).eq("id", episode_id).execute()
 ```
+
+Der Upload landet im öffentlichen Bucket `episoden-audio` (Dateiname = `episode_id` + `.mp3`) und liefert eine öffentliche URL zurück - der Bucket muss vorher einmalig existieren (siehe Abschnitt 8). Schlägt der Upload fehl, bleibt `audio_url` `None`/`NULL`, nur eine Konsolen-Warnung, kein Fehler; `audio_pfad` bleibt in jedem Fall gesetzt.
 
 Danach optional die Rhetorik-Prüfung:
 
@@ -286,6 +296,7 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 - **`themen.quelle` wird aktuell nirgends befüllt.**
 - **Zweite-Quelle-Verifikation läuft nur für neu angelegte Themen, nicht rückwirkend.** Alt-Themen (vor Einführung dieses Features, oder aus Updates/Duplikaten) haben `zweite_quelle_bestaetigt = NULL` - das heißt nicht "nicht bestätigt", sondern "nie geprüft".
 - **Rhetorik-Prüfung ist rein informativ.** `pruefe_rhetorik()` ändert nie automatisch den Manuskript-Prompt (Abschnitt 6) oder bestehende Episoden - gefundene Kritikpunkte müssen manuell umgesetzt werden.
+- **Supabase-Storage-Upload setzt einen existierenden, öffentlichen Bucket `episoden-audio` voraus** - existiert er nicht (z.B. neues Supabase-Projekt), schlägt der Upload fehl (Konsolen-Warnung, kein Absturz), `audio_url` bleibt `NULL`. Einmalig anlegen: `supabase.storage.create_bucket("episoden-audio", options={"public": True, "allowed_mime_types": ["audio/mpeg"]})`.
 - **`episoden_quellen` bekommt keine Zeile für Themen ohne nachvollziehbare Quellen-Verknüpfung** (z.B. alte Seed-/Testdaten ohne `redaktion_entscheidungen`-Bezug) - kein Fehler, nur eine Konsolen-Meldung beim Episode-Erstellen.
 
 ## 9. Häufige Änderungen - Schnellreferenz
@@ -312,6 +323,8 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 | Sprechgeschwindigkeit der Audiodatei | `DEEPGRAM_SPEED_STANDARD` | `generiere_audio.py` (wirkt nur bei englischen Stimmen) |
 | Wie streng der Faktencheck prüft | Prompt-Text in `baue_faktencheck_prompt` | `generiere_episode.py` |
 | Welches Gemini-Modell für Text/Redaktion verwendet wird | `GEMINI_MODEL_NAME` | `.env` |
+| Wortlaut des KI-Kennzeichnungshinweises am Episoden-Anfang | `KI_KENNZEICHNUNG_SATZ` | `generiere_episode.py` |
+| Name des Supabase-Storage-Buckets fürs Audio-Upload | `AUDIO_BUCKET` | `generiere_audio.py` |
 | Worauf der Rhetorik-Agent achtet | `fokus_beschreibung` (Zeile `rolle='rhetorik'`) | Table Editor, `agenten_konfiguration` |
 | Wie oft die Rhetorik-Prüfung läuft (aktuell alle 4 Episoden) | `MINDEST_EPISODEN` | `rhetorik_check.py` |
 | Wie viele Tavily/Exa-Treffer die Zweite-Quelle-Verifikation holt | `ZWEITE_QUELLE_MAX_TREFFER` | `recherche_und_redaktion.py` |
@@ -323,7 +336,7 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 **Manuell auslösen:**
 1. GitHub-Repo → Tab "Actions" → Workflow "Morgenlauf" in der linken Liste auswählen.
 2. Button "Run workflow" → nochmal "Run workflow" bestätigen.
-3. Nach Abschluss (egal ob erfolgreich oder mit Fehlern) im Lauf unter "Artifacts" das Paket `morgenlauf-<run-id>` herunterladen - enthält `lauf.log` (komplette Konsolen-Ausgabe wie lokal) sowie alle in `output/` erzeugten MP3-Dateien. GitHub Actions hat keinen dauerhaften Dateispeicher, deshalb muss die Audiodatei nach jedem Lauf so heruntergeladen werden.
+3. Nach Abschluss (egal ob erfolgreich oder mit Fehlern) im Lauf unter "Artifacts" das Paket `morgenlauf-<run-id>` herunterladen - enthält `lauf.log` (komplette Konsolen-Ausgabe wie lokal) sowie alle in `output/` erzeugten MP3-Dateien. GitHub Actions hat keinen dauerhaften Dateispeicher, und das Artefakt selbst läuft nach 14 Tagen ab (`retention-days: 14`) - für den dauerhaften Zugriff auf eine Episode zählt stattdessen `episoden.audio_url` (öffentliche Supabase-Storage-URL, siehe Abschnitt 4), die unabhängig vom Workflow-Lauf bestehen bleibt.
 
 **Fehlschlag sofort erkennbar, ohne Logs aufzuklappen:** Schlägt irgendein Schritt fehl, schreibt der zusätzliche Schritt "Fehlschlag in Job-Zusammenfassung markieren" (`if: failure()`) einen auffälligen `[!CAUTION]`-Alert samt Link zum Lauf und den letzten 30 Zeilen von `lauf.log` direkt in die GitHub Step Summary - sichtbar schon in der Actions-Übersicht, ohne das Artefakt herunterladen oder auf eine E-Mail-Benachrichtigung warten zu müssen. Bei einem erfolgreichen Lauf erscheint dieser Schritt gar nicht erst (übersprungen).
 

@@ -42,6 +42,20 @@ Zwei unabhängig aufrufbare Funktionen:
    oder "pruefung_fehlgeschlagen" bei mind. einem Widerspruch) direkt in der
    episoden-Zeile. Voraussetzung: Migration
    20260825080000_episoden_faktencheck.sql muss angewendet sein.
+
+Das Prompt-TEMPLATE für baue_manuskript_prompt() liegt NICHT mehr im Code,
+sondern versioniert in der Tabelle "manuskript_prompt_versionen"
+(hole_aktive_prompt_version() liest die Zeile mit ist_aktiv=true). Der
+Template-Text enthält die Platzhalter {PERSONA}, {THEMEN_BLOCK},
+{WOCHENRUECKBLICK_ABSCHNITT}, {FORMAT_HINWEIS_ABSCHNITT},
+{KI_KENNZEICHNUNG_HINWEIS}, {EROEFFNUNGSSIGNATUR} (siehe PFLICHT_PLATZHALTER),
+die baue_manuskript_prompt() per einfachem str.replace() befüllt -
+"zusatz_anweisung" ist bewusst NICHT Teil des Templates, wird weiterhin
+separat angehängt. aktiviere_prompt_version(version_nummer) aktiviert eine
+bestehende Version (und deaktiviert die vorherige) - für den manuellen
+Rücksprung, falls eine automatische Anpassung (siehe rhetorik_check.py)
+sich als Fehlgriff herausstellt. Voraussetzung: Migration
+20260826064911_manuskript_prompt_versionen.sql muss angewendet sein.
 """
 import json
 import os
@@ -62,6 +76,14 @@ load_dotenv()
 
 CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
 OFFENE_STATUS = ("neu", "in Verfolgung")
+PFLICHT_PLATZHALTER = (
+    "{PERSONA}",
+    "{THEMEN_BLOCK}",
+    "{WOCHENRUECKBLICK_ABSCHNITT}",
+    "{FORMAT_HINWEIS_ABSCHNITT}",
+    "{KI_KENNZEICHNUNG_HINWEIS}",
+    "{EROEFFNUNGSSIGNATUR}",
+)
 
 FORMAT_NACH_WOCHENTAG = {0: "montag", 4: "freitag"}  # datetime.weekday(): Montag=0 .. Sonntag=6
 GUELTIGE_FORMATE = {"montag", "freitag", "standard"}
@@ -296,7 +318,53 @@ def baue_ki_kennzeichnung_hinweis() -> str:
     )
 
 
+def hole_aktive_prompt_version(supabase) -> dict:
+    treffer = (
+        supabase.table("manuskript_prompt_versionen")
+        .select("id, version_nummer, prompt_text")
+        .eq("ist_aktiv", True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not treffer:
+        raise RuntimeError(
+            "Keine aktive Zeile in manuskript_prompt_versionen (ist_aktiv=true) gefunden."
+        )
+    return treffer[0]
+
+
+def aktiviere_prompt_version(version_nummer: int, supabase=None) -> None:
+    """Aktiviert die Prompt-Template-Version mit `version_nummer` (setzt ist_aktiv=true)
+    und deaktiviert alle anderen Versionen. Für den manuellen Rücksprung, falls eine
+    automatische Anpassung (siehe rhetorik_check.py) sich als Fehlgriff herausstellt -
+    kann aber auch von der automatischen Anpassung selbst zum Aktivieren der neuen
+    Version genutzt werden."""
+    if supabase is None:
+        supabase = hole_supabase_client()
+
+    treffer = (
+        supabase.table("manuskript_prompt_versionen")
+        .select("id")
+        .eq("version_nummer", version_nummer)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not treffer:
+        raise ValueError(f"Keine Prompt-Version mit version_nummer={version_nummer} gefunden.")
+
+    supabase.table("manuskript_prompt_versionen").update({"ist_aktiv": False}).eq(
+        "ist_aktiv", True
+    ).execute()
+    supabase.table("manuskript_prompt_versionen").update({"ist_aktiv": True}).eq(
+        "id", treffer[0]["id"]
+    ).execute()
+    print(f"-> Prompt-Version {version_nummer} aktiviert.")
+
+
 def baue_manuskript_prompt(
+    supabase,
     persona: str,
     themen_block: str,
     zusatz_anweisung: str | None,
@@ -310,103 +378,16 @@ def baue_manuskript_prompt(
         if wochenrueckblick_block
         else ""
     )
+    format_hinweis_abschnitt = f"{format_hinweis}\n\n" if format_hinweis else ""
+
+    template = hole_aktive_prompt_version(supabase)["prompt_text"]
     prompt = (
-        f"{persona}\n\n"
-        "Erzähle wie eine Geschichte, nicht wie eine Nachrichtenmeldung. Der Hörer "
-        "soll sich in den ersten 15 Sekunden gepackt fühlen, nicht erst nach einer "
-        "Anmoderation.\n\n"
-        "Du schreibst das Manuskript für die nächste Folge deines Podcasts. Hier "
-        "sind die aktuell akzeptierten Themen (die [ID: ...]-Markierung ist nur "
-        "für dich zur Zuordnung, NICHT vorlesen):\n\n"
-        f"{themen_block}\n\n"
-        f"{wochenrueckblick_abschnitt}"
-        "THEMENAUSWAHL:\n\n"
-        "- Wähle daraus die 5-6 wichtigsten Themen für diese Episode aus. Wenn "
-        "mehr als 6 Themen aufgeführt sind, lass die übrigen bewusst weg - nimm "
-        "die, die für den Hörer gerade am relevantesten oder aktuellsten sind.\n\n"
-        + (f"{format_hinweis}\n\n" if format_hinweis else "")
-        + "LÄNGE:\n\n"
-        "- Das fertige Manuskript soll 1400-1600 Wörter umfassen. Erreiche das "
-        "NICHT durch mehr Themen, sondern durch mehr Tiefe pro Geschichte: ein "
-        "zusätzliches konkretes Detail, ein kurzes Beispiel aus der Praxis, oder "
-        "eine kurze Einordnung, warum das Thema gerade jetzt relevant ist. Jeder "
-        "Themenblock darf ruhig 30-50% länger werden als bisher.\n\n"
-        "FORTSETZUNGEN:\n\n"
-        '- Trägt ein Thema den Hinweis "Fortsetzung eines bereits gesendeten Themas", '
-        "erwähne kurz und beiläufig, dass ihr darüber schon mal gesprochen habt "
-        '(z.B. "Erinnert ihr euch an ..." oder "Update zu einer Geschichte, die wir '
-        'schon hatten"), bevor du die neue Entwicklung erzählst. Bei Themen ohne diesen '
-        "Hinweis: keine solche Anmoderation.\n\n"
-        "AUFBAU DER EPISODE:\n\n"
-        f"- {baue_ki_kennzeichnung_hinweis()}\n\n"
-        f"- {eroeffnungssignatur}\n\n"
-        "- Nach der Eröffnungssignatur (siehe oben) KEIN zusätzliches \"Hallo "
-        "zusammen\" oder \"hier sind die Meldungen des Tages\". Geh direkt aus "
-        "der Signatur in den Hook über: eine überraschende Frage, ein "
-        "plastisches Szenario oder eine Zahl, die den Hörer sofort betrifft. "
-        "Keine weitere Anmoderation zwischen Signatur und Hook.\n\n"
-        "- Jedes Thema ist eine Mini-Geschichte mit drei Teilen:\n"
-        "  1. Ein konkretes, vorstellbares Bild oder Szenario, das den Hörer "
-        "betrifft - eine reale Alltagssituation, in die du direkt hineinspringst. "
-        "Kein \"Unternehmen könnten betroffen sein\" - ein konkretes Beispiel, "
-        "das nachvollziehbar ist (darf erfunden/typisch sein, muss aber "
-        "plastisch sein).\n"
-        "  2. Was tatsächlich passiert ist - der Fakt, kurz und präzise.\n"
-        "  3. Was das konkret für den Hörer heißt, mit einem klaren "
-        "Handlungsschritt.\n\n"
-        "WICHTIG: Beginne einen Themenblock NICHT mit \"Stell dir vor...\" oder "
-        "\"Kennst du das...\" - das wurde in den letzten Folgen bereits mehrfach "
-        "verwendet und wirkt dadurch formelhaft. Variiere stattdessen bewusst: "
-        "manchmal eine überraschende Zahl direkt am Anfang, manchmal ein "
-        "Kontrast/eine Überraschung (\"Ihr würdet nicht erwarten, dass "
-        "ausgerechnet...\"), manchmal eine direkte Frage an den Hörer, manchmal "
-        "eine kurze plakative Behauptung, die dann aufgelöst wird, manchmal ein "
-        "Alltagsszenario, das direkt in der Situation beginnt ohne "
-        "Ankündigungsformel (z.B. \"Montagmorgen, das Telefon klingelt...\"). "
-        "\"Stell dir vor\" darf in einer ganzen Episode höchstens EINMAL "
-        "vorkommen, wenn überhaupt.\n\n"
-        "- Schließe jeden Themenblock mit einer kurzen, direkten Frage an den "
-        "Hörer ab, die zum Nachdenken oder Handeln anregt.\n\n"
-        "- Wiederhole NICHT bei jedem Thema dasselbe Muster. Variiere den Aufbau: "
-        "manche Abschnitte enden mit einer direkten Handlungsaufforderung statt "
-        "einer Frage an den Hörer, manche starten mit einer überraschenden Zahl "
-        "statt einem Szenario. Die Hörer sollen nicht vorhersehen können, wie der "
-        "nächste Abschnitt endet.\n\n"
-        "- Wiederhole NICHT die exakt gleiche Übergangsformulierung zwischen Fakt "
-        "und Handlungsempfehlung (z.B. \"Was heißt das konkret für...\"). "
-        "Variiere das bei jedem Thema neu - manchmal ein direkter Imperativ ohne "
-        "Ankündigung, manchmal eine kurze Feststellung, manchmal ein "
-        "Kontrast-Satz. Kein Thema soll denselben Übergangssatz wie ein "
-        "vorheriges nutzen.\n\n"
-        "- Zwischen den Themen: echte Übergänge, keine reine Aneinanderreihung. "
-        "Variiere die Art des Übergangs bei JEDEM Themenwechsel - nutze nicht "
-        "wiederholt dieselbe Konstruktion wie 'Und während...' oder 'Und weil wir "
-        "gerade bei...'. Stattdessen abwechselnd: mal ein direkter thematischer "
-        "Sprung ganz ohne Brücken-Floskel, mal ein knapper Kontrast-Satz, mal eine "
-        "rhetorische Frage als Übergang, mal ein harter Fakt, der unvermittelt das "
-        "nächste Thema eröffnet. Kein Übergangsmuster darf zweimal in derselben "
-        "Episode oder in aufeinanderfolgenden Episoden vorkommen.\n\n"
-        "- Kurzer, ebenso packender Abschluss am Ende - keine Standard-"
-        "Verabschiedungsfloskel.\n\n"
-        "HUMOR:\n\n"
-        "- Baue an passenden Stellen trockenen, lakonischen Humor ein - keine "
-        "Kalauer, kein Slapstick, sondern der Humor eines aufmerksamen "
-        "Beobachters, der die Ironie einer Situation sieht. Zum Beispiel: ein "
-        "trockener Kommentar, wenn eine KI-Firma ein Problem löst, das sie selbst "
-        "mitverursacht hat, oder eine leicht überspitzte, aber treffende "
-        "Formulierung für eine kuriose Situation. Nutze das NICHT bei ernsten "
-        "Themen wie Sicherheitslücken mit akutem Handlungsbedarf oder "
-        "rechtlichen Fristen - dort bleibst du sachlich und dringlich. Der Humor "
-        "darf niemals Fakten, Zahlen oder Namen verfälschen oder verharmlosen. "
-        "Setze ihn sparsam ein, maximal bei zwei bis drei der Themen, nicht bei "
-        "allen.\n\n"
-        "Gib NUR den reinen Manuskripttext zurück, ohne Regieanweisungen, "
-        "Kapitelüberschriften oder Markdown-Formatierung. Hänge danach als GANZ "
-        "LETZTE Zeile exakt in diesem Format an (kein zusätzlicher Text, keine "
-        "Erklärung):\n"
-        "VERWENDETE_THEMEN_IDS: <id1>,<id2>,...\n"
-        "- die IDs (aus den [ID: ...]-Markierungen oben) der Themen, die du "
-        "tatsächlich verwendet hast."
+        template.replace("{PERSONA}", persona)
+        .replace("{THEMEN_BLOCK}", themen_block)
+        .replace("{WOCHENRUECKBLICK_ABSCHNITT}", wochenrueckblick_abschnitt)
+        .replace("{FORMAT_HINWEIS_ABSCHNITT}", format_hinweis_abschnitt)
+        .replace("{KI_KENNZEICHNUNG_HINWEIS}", baue_ki_kennzeichnung_hinweis())
+        .replace("{EROEFFNUNGSSIGNATUR}", eroeffnungssignatur)
     )
     if zusatz_anweisung:
         prompt += f"\n\n--- Zusätzliche Anweisung für diesen Durchlauf ---\n{zusatz_anweisung}"
@@ -429,7 +410,7 @@ def erstelle_manuskript(
     episode_id: str | None = None,
 ) -> tuple[str, list[str]]:
     prompt = baue_manuskript_prompt(
-        persona, themen_block, zusatz_anweisung, eroeffnungssignatur, format_hinweis, wochenrueckblick_block
+        supabase, persona, themen_block, zusatz_anweisung, eroeffnungssignatur, format_hinweis, wochenrueckblick_block
     )
     rohantwort = chat_model.generate_content(prompt)
 

@@ -235,6 +235,13 @@ def drucke_rhetorik_block(rhetorik_ergebnis: dict) -> None:
                 print(f'  - {p.get("problem")}')
                 print(f'    Beispiel: "{p.get("beispiel_zitat")}"')
                 print(f'    Vorschlag: {p.get("vorschlag")}')
+            print()
+            print(
+                f'  Rhetorik-Kritik gefunden - führe manuell '
+                f'passe_manuskript_prompt_an(bewertung_id="{rhetorik_ergebnis["id"]}") aus, '
+                "um eine Korrektur vorzuschlagen (Diff wird zum Gegenlesen angezeigt, bevor "
+                "sie aktiv wird)."
+            )
         else:
             print("  Keine konkreten Kritikpunkte - Folgen wurden als stark bewertet.")
     else:

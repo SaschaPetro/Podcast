@@ -79,6 +79,36 @@ class PromptTests(unittest.TestCase):
         self.assertIn("In der heutigen schnelllebigen Welt", prompt)
         self.assertIn("Nutze ausschließlich Zahlen", prompt)
 
+    def test_verabschiedung_standard_und_freitag(self):
+        standard = self.modul.baue_verabschiedung("standard")
+        freitag = self.modul.baue_verabschiedung("freitag")
+
+        self.assertIn("bis morgen", standard.lower())
+        self.assertNotIn("bis morgen", freitag.lower())
+        self.assertIn("schönes wochenende", freitag.lower())
+        self.assertIn("bis montag", freitag.lower())
+
+    def test_freitagsprompt_verbietet_bis_morgen(self):
+        template = "{PERSONA}\n{THEMEN_BLOCK}\n{WOCHENRUECKBLICK_ABSCHNITT}{FORMAT_HINWEIS_ABSCHNITT}{KI_KENNZEICHNUNG_HINWEIS}\n{EROEFFNUNGSSIGNATUR}"
+        verabschiedung = self.modul.baue_verabschiedung("freitag")
+        with patch.object(self.modul, "hole_aktive_prompt_version", return_value={"prompt_text": template}):
+            prompt = self.modul.baue_manuskript_prompt(
+                MagicMock(), "Persona", "Themen", None, "Begrüßung", verabschiedung=verabschiedung
+            )
+
+        self.assertIn(verabschiedung, prompt)
+        self.assertIn('darf die Verabschiedung insbesondere nicht "bis morgen" sagen', prompt)
+
+    def test_freitagsverabschiedung_wird_nach_modellantwort_erzwungen(self):
+        freitag = self.modul.baue_verabschiedung("freitag")
+        entwurf = f"Nachrichtentext.\n\n{self.modul.VERABSCHIEDUNG_STANDARD}"
+
+        ergebnis = self.modul.stelle_verabschiedung_sicher(entwurf, freitag)
+
+        self.assertTrue(ergebnis.endswith(freitag))
+        self.assertNotIn("bis morgen", ergebnis.lower())
+        self.assertEqual(ergebnis.count(freitag), 1)
+
     def test_faktencheck_deckt_alle_tatsachenbehauptungen_ab(self):
         prompt = self.modul.baue_faktencheck_prompt("Manuskript", "Quellen")
         self.assertIn("jede konkrete Tatsachenbehauptung", prompt)

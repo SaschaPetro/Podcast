@@ -306,6 +306,30 @@ def baue_eroeffnungssignatur(format: str) -> str:
     )
 
 
+VERABSCHIEDUNG_NACH_FORMAT = {
+    "freitag": (
+        "Das war euer KI-Update für diese Woche. Danke fürs Zuhören, "
+        "habt ein schönes Wochenende und bis Montag."
+    ),
+}
+VERABSCHIEDUNG_STANDARD = "Das war euer KI-Update für heute. Danke fürs Zuhören und bis morgen."
+
+
+def baue_verabschiedung(format: str) -> str:
+    return VERABSCHIEDUNG_NACH_FORMAT.get(format, VERABSCHIEDUNG_STANDARD)
+
+
+def stelle_verabschiedung_sicher(manuskripttext: str, verabschiedung: str) -> str:
+    """Erzwingt die formatgerechte Schlusszeile auch dann, wenn das Modell
+    die Prompt-Anweisung ausgelassen oder die Standardzeile verwendet hat."""
+    text = manuskripttext.strip()
+    if verabschiedung == VERABSCHIEDUNG_NACH_FORMAT["freitag"]:
+        text = text.removesuffix(VERABSCHIEDUNG_STANDARD).rstrip()
+    if not text.endswith(verabschiedung):
+        text = f"{text}\n\n{verabschiedung}"
+    return text
+
+
 KI_KENNZEICHNUNG_SATZ = (
     "Kurzer Hinweis vorweg: Diese Folge wurde vollautomatisch mit Künstlicher "
     "Intelligenz erstellt - Recherche, Text und Stimme."
@@ -377,6 +401,7 @@ def baue_manuskript_prompt(
     eroeffnungssignatur: str,
     format_hinweis: str = "",
     wochenrueckblick_block: str = "",
+    verabschiedung: str = VERABSCHIEDUNG_STANDARD,
 ) -> str:
     wochenrueckblick_abschnitt = (
         f"WOCHENRÜCKBLICK (Kontext zur Einordnung, NICHT einfach nochmal alle Punkte auflisten):\n\n"
@@ -423,6 +448,17 @@ Nutze ausschließlich Zahlen, Namen, Daten und konkrete Tatsachen, die im bereit
 LÄNGE UND SENDEDAUER:
 Das Manuskript muss 1.400 bis 1.600 Wörter umfassen. Das entspricht ungefähr zehn Minuten. Nutze die Länge für belegte Details, verständliche Einordnung, Folgen für Unternehmen und konkrete, aus den Quellen ableitbare Handlungsmöglichkeiten – niemals für Wiederholungen oder Füllsätze. Prüfe die Wortzahl vor der Ausgabe selbst. Unter 1.350 Wörtern ist das Manuskript unvollständig.
 """
+    prompt += (
+        "\n\nVERBINDLICHE VERABSCHIEDUNG:\n"
+        "Beende den gesprochenen Manuskripttext unmittelbar vor der technischen Zeile "
+        "VERWENDETE_THEMEN_IDS exakt mit diesem Satz und füge keine weitere "
+        f'Verabschiedung hinzu: "{verabschiedung}"'
+    )
+    if verabschiedung == VERABSCHIEDUNG_NACH_FORMAT["freitag"]:
+        prompt += (
+            '\nDa dies die Freitagsfolge ist, darf die Verabschiedung insbesondere nicht "bis morgen" '
+            'sagen. Der nächste genannte Termin ist Montag.'
+        )
     if zusatz_anweisung:
         prompt += f"\n\n--- Zusätzliche Anweisung für diesen Durchlauf ---\n{zusatz_anweisung}"
     return prompt
@@ -440,11 +476,19 @@ def erstelle_manuskript(
     eroeffnungssignatur: str,
     format_hinweis: str = "",
     wochenrueckblick_block: str = "",
+    verabschiedung: str = VERABSCHIEDUNG_STANDARD,
     lauf_id: str | None = None,
     episode_id: str | None = None,
 ) -> tuple[str, list[str]]:
     prompt = baue_manuskript_prompt(
-        supabase, persona, themen_block, zusatz_anweisung, eroeffnungssignatur, format_hinweis, wochenrueckblick_block
+        supabase,
+        persona,
+        themen_block,
+        zusatz_anweisung,
+        eroeffnungssignatur,
+        format_hinweis,
+        wochenrueckblick_block,
+        verabschiedung,
     )
     antwort = ""
     for versuch in range(1, MANUSKRIPT_MAX_VERSUCHE + 1):
@@ -502,9 +546,10 @@ def erstelle_manuskript(
     treffer = _IDS_ZEILE.search(antwort)
     if not treffer:
         print("WARNUNG: Keine VERWENDETE_THEMEN_IDS-Zeile in der Antwort gefunden.")
-        return antwort, []
+        return stelle_verabschiedung_sicher(antwort, verabschiedung), []
 
     manuskripttext = antwort[: treffer.start()].strip()
+    manuskripttext = stelle_verabschiedung_sicher(manuskripttext, verabschiedung)
     verwendete_ids = [teil.strip() for teil in treffer.group(1).split(",") if teil.strip()]
     return manuskripttext, verwendete_ids
 
@@ -542,6 +587,7 @@ def erstelle_episode(
 
     format_hinweis = baue_format_hinweis(aktives_format, samstag, sonntag)
     eroeffnungssignatur = baue_eroeffnungssignatur(aktives_format)
+    verabschiedung = baue_verabschiedung(aktives_format)
 
     # Episode-Zeile wird VOR dem Gemini-Call angelegt (noch ohne Manuskript),
     # damit die Manuskript-Kosten (der teuerste Einzelschritt einer Episode)
@@ -565,6 +611,7 @@ def erstelle_episode(
         eroeffnungssignatur,
         format_hinweis,
         wochenrueckblick_block,
+        verabschiedung,
         lauf_id=lauf_id,
         episode_id=episode_id,
     )

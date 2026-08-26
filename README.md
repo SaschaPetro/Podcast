@@ -155,6 +155,45 @@ pruefe_rhetorik()
 
 Oder über die Kommandozeile: `python rhetorik_check.py`. Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens `MINDEST_EPISODEN` neue Episoden entstanden sind - sonst nur ein Konsolen-Hinweis, keine Zeile in `rhetorik_bewertungen`.
 
+### Der Rhetorik-Agent und automatische Prompt-Anpassung
+
+**1. Was er macht:** Prüft alle 4 Episoden die letzten 4 Manuskripte auf rhetorische Qualität (Wiederholungsmuster über mehrere Folgen, Balance zwischen Storytelling und Nachrichtenkern) - unabhängig vom Faktencheck, der nur Fakten prüft. Läuft automatisch als letzter Schritt (9/9) in `morgenlauf.py`, das Ergebnis erscheint in der Konsolen-Zusammenfassung.
+
+**2. Wichtig - er ändert NICHTS automatisch:** Die Prüfung selbst speichert nur eine Bewertung mit konkreten Kritikpunkten in `rhetorik_bewertungen`. Die eigentliche Prompt-Anpassung ist ein **separater, manuell auszulösender** Schritt - kein automatischer Cron-Effekt.
+
+**3. Wie man eine Korrektur anwendet (Schritt für Schritt):**
+
+a) In der Konsolen-Zusammenfassung von `morgenlauf.py` steht bei gefundenen Problemen ein Hinweis mit der `bewertung_id`.
+
+b) Manuell aufrufen:
+   ```python
+   from rhetorik_check import passe_manuskript_prompt_an
+   passe_manuskript_prompt_an(bewertung_id="...")
+   ```
+   Das erzeugt eine **neue, aber inaktive** Version in `manuskript_prompt_versionen` und zeigt sofort einen Diff gegen die aktuell aktive Version direkt auf der Konsole an. An dieser Stelle ist noch **nichts live geschaltet** - die bisherige Version bleibt unverändert aktiv.
+
+c) **Immer den Diff prüfen** (steht direkt in der Ausgabe des Aufrufs), bevor man die neue Version überhaupt in Erwägung zieht. Prüfe insbesondere:
+   - Sind alle 6 Platzhalter noch vorhanden? (`{PERSONA}`, `{THEMEN_BLOCK}`, `{WOCHENRUECKBLICK_ABSCHNITT}`, `{FORMAT_HINWEIS_ABSCHNITT}`, `{KI_KENNZEICHNUNG_HINWEIS}`, `{EROEFFNUNGSSIGNATUR}`)
+   - Wurde nur der kritisierte Teil geändert, oder auch unkritisierte Regeln entfernt/verändert?
+   - Ist der Ton/die Anrede (Du-Form) konsistent geblieben?
+   - Testweise eine Episode erzeugen und lesen, ob es sich wirklich besser anfühlt.
+
+d) Ist der Diff gut: übernehmen mit
+   ```python
+   from generiere_episode import aktiviere_prompt_version
+   aktiviere_prompt_version(<neue_version_nummer>)  # Nummer steht am Ende der Ausgabe von passe_manuskript_prompt_an()
+   ```
+   Ist er nicht gut: einfach nichts tun - die neue Version bleibt inaktiv in der Historie liegen, ohne jede Wirkung.
+
+e) Stellt sich eine bereits aktivierte Version später doch als Fehlgriff heraus, dient derselbe Befehl als Rücksprung:
+   ```python
+   aktiviere_prompt_version(1)  # zurück zur ursprünglichen, von Menschen geprüften Fassung
+   ```
+
+**4. Bekannte Risiken (aus echten Tests, nicht theoretisch):** Mehrfache Testläufe mit derselben Kritik haben gezeigt, dass die automatische Anpassung inkonsistent sein kann - mal ein Stilbruch (Sie/Du-Wechsel), mal Redundanz, mal versehentliches Löschen einer nicht kritisierten Regel beim "Aufräumen". Deshalb gilt: **niemals eine neue Version blind aktivieren, immer gegenlesen.**
+
+**5. Aktuelle Version:** Version 1 ist die aktive, von Menschen geprüfte Basis-Version. Automatisch vorgeschlagene Versionen sind zum Zeitpunkt dieses Dokuments nicht aktiv geschaltet.
+
 ## 4. Die Datenbank
 
 | Tabelle | Zweck | Wichtige Spalten | Verknüpfung |

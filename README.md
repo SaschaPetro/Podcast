@@ -274,7 +274,7 @@ Der komplette Struktur-Prompt liegt in **`generiere_episode.py`**, Funktion **`b
 | Abschnitt im Prompt | Steuert |
 |---|---|
 | `THEMENAUSWAHL` | Wie viele Themen ausgewählt werden (aktuell 5-6) |
-| `LÄNGE` | Ziel-Wortzahl 1300-1450 Wörter für ungefähr 10 Minuten; unter 1200 Wörtern wird mit dem bisherigen Entwurf als Arbeitsgrundlage bis zu zweimal neu generiert und danach notfalls abgebrochen |
+| `LÄNGE` | Ziel-Wortzahl 1300-1450 Wörter für ungefähr 10 Minuten; unter 1200 Wörtern wird mit dem bisherigen Entwurf als Arbeitsgrundlage bis zu viermal nachgebessert und danach notfalls abgebrochen |
 | `NACHRICHTEN VOR STORYTELLING` | Pro Thema zuerst belegte Meldung, dann Kontext, dann Bedeutung/Handlungsschritt; Storytelling nur danach und ausschließlich zur notwendigen Erklärung |
 | `AUFBAU DER EPISODE` | KI-Kennzeichnungshinweis ganz am Anfang, danach direkter Nachrichteneinstieg, Drei-Teile-Struktur pro Thema, knappe Übergänge und Abschluss |
 | `HUMOR` | Ob/wo trockener Humor eingebaut wird, und wo explizit nicht (ernste Themen) |
@@ -290,7 +290,7 @@ Der komplette Struktur-Prompt liegt in **`generiere_episode.py`**, Funktion **`b
 
 Der aktive Basisprompt wird aus `manuskript_prompt_versionen` geladen. `baue_manuskript_prompt()` hängt zusätzlich eine verbindliche redaktionelle Leitlinie an, die bei widersprüchlichen älteren Prompt-Regeln Vorrang hat. Die technischen Grenzen liegen in `MANUSKRIPT_ZIEL_MIN_WOERTER`, `MANUSKRIPT_ZIEL_MAX_WOERTER`, `MANUSKRIPT_HARTE_MIN_WOERTER` und `MANUSKRIPT_MAX_VERSUCHE` in `generiere_episode.py`.
 
-**Technische Längensicherung:** `erstelle_manuskript()` zählt die tatsächlich ausgegebenen Wörter ohne die abschließende Themen-ID-Zeile. Liegt ein Entwurf unter 1200 Wörtern, erhält der nächste Modellaufruf den vollständigen bisherigen Entwurf sowie die ursprünglichen Themen als Arbeitsgrundlage. Er darf nur durch journalistische Substanz erweitert werden: belegte Details, Hintergrund, Zusammenhänge, Folgen für Unternehmen und Handlungsmöglichkeiten. Für jeden Versuch sind bis zu 8192 Output-Tokens freigegeben. Nach höchstens drei Versuchen löst die Funktion weiterhin einen Fehler aus, falls kein Entwurf mindestens 1200 Wörter erreicht; die Episode wird dann nicht gespeichert und nicht vertont.
+**Technische Längensicherung:** `erstelle_manuskript()` zählt die tatsächlich ausgegebenen Wörter ohne die abschließende Themen-ID-Zeile. Liegt ein Entwurf unter 1200 Wörtern, erhält der nächste Modellaufruf den vollständigen bisherigen Entwurf sowie die ursprünglichen Themen als Arbeitsgrundlage. Zusätzlich wird die genaue Differenz bis zum Ziel von 1300 Wörtern genannt; vorhandene sachliche Passagen dürfen nicht gekürzt werden. Erweitert werden darf nur durch journalistische Substanz: belegte Details, Hintergrund, Zusammenhänge, Folgen für Unternehmen und Handlungsmöglichkeiten. Für jeden Versuch sind bis zu 8192 Output-Tokens freigegeben. Nach höchstens fünf Versuchen löst die Funktion weiterhin einen Fehler aus, falls kein Entwurf mindestens 1200 Wörter erreicht; die Episode wird dann nicht gespeichert und nicht vertont.
 
 Am Ende des Prompts wird die KI zusätzlich angewiesen, als letzte Zeile `VERWENDETE_THEMEN_IDS: <id1>,<id2>,...` zurückzugeben. Diese Zeile wird von `erstelle_manuskript` per Regex herausgeschnitten (landet NICHT im gespeicherten `manuskripttext`) und dient nur dazu, die verwendeten Themen korrekt auf Status `gesendet` zu setzen.
 

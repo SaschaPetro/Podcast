@@ -79,7 +79,7 @@ OFFENE_STATUS = ("neu", "in Verfolgung")
 MANUSKRIPT_ZIEL_MIN_WOERTER = 1300
 MANUSKRIPT_ZIEL_MAX_WOERTER = 1450
 MANUSKRIPT_HARTE_MIN_WOERTER = 1200
-MANUSKRIPT_MAX_VERSUCHE = 3
+MANUSKRIPT_MAX_VERSUCHE = 5
 MANUSKRIPT_MAX_OUTPUT_TOKENS = 8192
 PFLICHT_PLATZHALTER = (
     "{PERSONA}",
@@ -440,12 +440,17 @@ def erstelle_manuskript(
         versuchs_prompt = prompt
         if versuch > 1:
             bisherige_wortzahl = len(_IDS_ZEILE.sub("", antwort).strip().split())
+            mindestens_fehlende_woerter = max(
+                MANUSKRIPT_ZIEL_MIN_WOERTER - bisherige_wortzahl, 0
+            )
             versuchs_prompt += (
                 "\n\n--- ZU KURZER ENTWURF: VERBINDLICHE ÜBERARBEITUNG ---\n"
                 f"Der folgende Entwurf hat nur {bisherige_wortzahl} Wörter. Überarbeite genau diesen "
                 f"Entwurf zu einem vollständigen Manuskript mit {MANUSKRIPT_ZIEL_MIN_WOERTER} bis "
                 f"{MANUSKRIPT_ZIEL_MAX_WOERTER} Wörtern. Gib anschließend das gesamte überarbeitete "
-                "Manuskript aus, nicht nur Ergänzungen. Erweitere ausschließlich die journalistische "
+                f"Manuskript aus, nicht nur Ergänzungen. Füge netto mindestens {mindestens_fehlende_woerter} "
+                "inhaltlich neue Wörter hinzu. Kürze dabei keine bereits vorhandene sachliche Passage. "
+                "Erweitere ausschließlich die journalistische "
                 "Substanz: zusätzliche belegte Details aus den oben bereitgestellten Themen, Hintergrund, "
                 "Zusammenhänge, Folgen für Unternehmen und konkrete Handlungsmöglichkeiten. Verwende "
                 "kein zusätzliches Storytelling, keine erfundenen Inhalte und keine Wiederholungen. "

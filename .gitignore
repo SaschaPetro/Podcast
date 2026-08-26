@@ -1,5 +1,10 @@
 .env
+.vercel/
 .claude/
 node_modules/
 __pycache__/
 output/
+.DS_Store
+
+.vercel
+.env*

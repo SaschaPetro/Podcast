@@ -99,7 +99,7 @@ Aktuell drei Stück, alle mit identischer Logik, aber unterschiedlichem Fokus:
 | Regulierung & Recht | EU AI Act, Datenschutz, Gerichtsurteile, Politik |
 | Wirtschaft & Unternehmen | Investitionen, Marktentwicklungen, Praxisbeispiele deutscher Unternehmen |
 
-**Was sie tun:** Jeder Recherche-Agent bekommt alle `rohnachrichten` der letzten 3 Tage, die er noch nicht bewertet hat, und wählt per Gemini die 3-5 relevantesten für seinen Fokus aus (`waehle_relevante_nachrichten` in `recherche_und_redaktion.py`). Die Auswahl landet mit Begründung in `agent_vorschlaege`.
+**Was sie tun:** Jeder Recherche-Agent bekommt alle `rohnachrichten` der letzten 3 Tage, die er noch nicht bewertet hat, und wählt per Gemini 5-7 geeignete Meldungen für seinen Fokus aus (`waehle_relevante_nachrichten` in `recherche_und_redaktion.py`). Besonders relevante Meldungen haben Vorrang. Reichen sie nicht aus, dürfen auch aktuelle, belastbare Meldungen mittlerer KMU-Relevanz vorgeschlagen werden. Gerüchte, Duplikate, veraltete und thematisch unpassende Inhalte bleiben ausgeschlossen. Die Auswahl landet mit Begründung in `agent_vorschlaege`.
 
 **Ändern:** Table Editor in Supabase öffnen → Tabelle `agenten_konfiguration` → Zeile mit `name = 'Produkte & Tools'` (bzw. dem gewünschten Agenten) → Spalte `fokus_beschreibung` bearbeiten. Beispiel: Wenn "Produkte & Tools" sich stärker auf Open-Source-Modelle statt kommerzielle Tools konzentrieren soll, den Fokus-Text entsprechend umschreiben.
 
@@ -124,7 +124,7 @@ python recherche_und_redaktion.py agent "Produkte & Tools" "Achte diesmal besond
 
 Aktuell ein Agent: **Redaktion KMU** (fokus: Perspektive eines Geschäftsführers eines kleinen deutschen Unternehmens).
 
-**Was er tut:** Sieht alle offenen Vorschläge aller Recherche-Agenten gemeinsam, wählt die 4-6 wichtigsten aus und gibt für JEDEN Vorschlag (auch die abgelehnten) eine Begründung ab (`entscheide_ueber_vorschlaege`). Die Entscheidungen landen in `redaktion_entscheidungen`.
+**Was er tut:** Sieht alle offenen Vorschläge aller Recherche-Agenten gemeinsam und wählt möglichst 5-6 Themen aus. Kategorie A umfasst Meldungen mit hoher unmittelbarer KMU-Relevanz. Sind davon weniger als fünf vorhanden, wird mit den besten Meldungen der Kategorie B aufgefüllt: mittlere Relevanz, aber aktuell, belastbar und für Marktbeobachtung oder strategische Einordnung nützlich. Schlechte, unbelegte, veraltete oder doppelte Inhalte werden auch dann nicht akzeptiert. Für jeden Vorschlag wird eine begründete Entscheidung gespeichert (`entscheide_ueber_vorschlaege`).
 
 **Chancen/Risiko-Gewichtung:** Der Fokus-Text schreibt zusätzlich vor, dass der Podcast sich nicht überwiegend wie eine IT-Sicherheitswarnung anhören soll. Chancen- und Nutzen-Themen (neue Tools, neue Anwendungsfälle, was andere Unternehmen erfolgreich machen) werden bevorzugt; reine Sicherheits-/Risikothemen sollen maximal 30% der akzeptierten Themen einer Folge ausmachen. Bei ähnlicher Relevanz gewinnt das Chancen-Thema. In der Praxis zeigt sich das z.B., wenn zwei Recherche-Agenten dieselbe Meldung unterschiedlich framen (einmal als neues Feature, einmal als Sicherheitsrisiko) - die Redaktion akzeptiert dann tendenziell die Chancen-Version.
 
@@ -255,9 +255,9 @@ e) Stellt sich eine bereits aktivierte Version später doch als Fehlgriff heraus
 
 ## 5. Auswahl-Kriterien: Wie ein Thema es in die Folge schafft
 
-1. **Recherche:** Jeder der 3 Recherche-Agenten filtert unabhängig aus den `rohnachrichten` der letzten 3 Tage die für seinen Fokus 3-5 relevantesten aus (Gemini-Prompt in `waehle_relevante_nachrichten`). Bereits bewertete Rohnachrichten werden pro Agent nicht erneut vorgeschlagen.
+1. **Recherche:** Jeder der 3 Recherche-Agenten filtert unabhängig aus den `rohnachrichten` der letzten 3 Tage 5-7 geeignete Meldungen aus (Gemini-Prompt in `waehle_relevante_nachrichten`). Nach hochrelevanten Meldungen dürfen bei Bedarf auch aktuelle und belastbare Meldungen mittlerer Relevanz folgen. Bereits bewertete Rohnachrichten werden pro Agent nicht erneut vorgeschlagen.
 2. **Vorschlag:** Diese Auswahl landet mit Begründung in `agent_vorschlaege` - noch unabhängig von den anderen Agenten, es gibt hier keine Deduplizierung zwischen den drei Recherche-Agenten.
-3. **Redaktions-Bewertung:** Der Redaktions-Agent sieht ALLE offenen Vorschläge aller Recherche-Agenten zusammen und wählt die 4-6 wichtigsten aus der Perspektive eines KMU-Geschäftsführers (`entscheide_ueber_vorschlaege`). Dabei bevorzugt er Chancen-/Nutzen-Themen gegenüber reinen Sicherheits-/Risikothemen (max. 30% der akzeptierten Themen, siehe Abschnitt 3). Für jeden Vorschlag - auch abgelehnte - wird eine Begründung gespeichert (`redaktion_entscheidungen`).
+3. **Redaktions-Bewertung:** Der Redaktions-Agent sieht ALLE offenen Vorschläge aller Recherche-Agenten zusammen und wählt möglichst 5-6 aus der Perspektive eines KMU-Geschäftsführers (`entscheide_ueber_vorschlaege`). Zuerst kommen Themen der Kategorie A mit hoher unmittelbarer Relevanz. Unter fünf Themen wird mit geeigneten Kategorie-B-Themen mittlerer Relevanz aufgefüllt. Dabei bevorzugt er Chancen-/Nutzen-Themen gegenüber reinen Sicherheits-/Risikothemen (max. 30% der akzeptierten Themen, siehe Abschnitt 3). Für jeden Vorschlag - auch abgelehnte - wird eine Begründung gespeichert (`redaktion_entscheidungen`).
 4. **Dedup/Update-Check über Embeddings:** `verarbeite_akzeptierte_entscheidungen()` nimmt jede akzeptierte, noch nicht verknüpfte Entscheidung und lässt Titel+Text der zugehörigen Rohnachricht durch dieselbe Logik wie `verarbeite_rohnachricht.py` laufen:
    - Gemini-Embedding erzeugen
    - Per `finde_aehnliche_themen` (Schwellenwert 0.85, Cosine Similarity) nach einem bestehenden, ähnlichen Thema suchen

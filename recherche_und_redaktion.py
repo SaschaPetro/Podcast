@@ -136,8 +136,12 @@ def waehle_relevante_nachrichten(
 
     prompt = (
         f"{systemkontext}\n\n"
-        "Wähle aus den folgenden Nachrichten die 3-5 relevantesten für deinen Fokus aus, "
-        "jeweils mit kurzer Begründung.\n\n"
+        "Wähle aus den folgenden Nachrichten 5-7 geeignete Meldungen für deinen Fokus aus, "
+        "jeweils mit kurzer Begründung. Priorisiere zuerst die besonders relevanten Meldungen. "
+        "Wenn davon weniger als 5 vorhanden sind, ergänze auch Meldungen mittlerer Relevanz, "
+        "sofern sie aktuell, sachlich belastbar und für kleine oder mittlere Unternehmen "
+        "zumindest zur Einordnung nützlich sind. Nimm keine bloßen Gerüchte, Duplikate, "
+        "veralteten Meldungen oder thematisch unpassenden Inhalte nur zum Auffüllen auf.\n\n"
         f"{nachrichten_block}\n\n"
         "Antworte NUR mit JSON in diesem Format: "
         '[{"rohnachricht_titel": string, "begruendung": string}]'
@@ -320,8 +324,17 @@ def entscheide_ueber_vorschlaege(
     prompt = (
         f"{systemkontext}\n\n"
         "Hier sind alle offenen Themen-Vorschläge der Recherche-Agenten für die nächste Episode. "
-        "Wähle die 4-6 wichtigsten aus. Gib für JEDEN Vorschlag eine Entscheidung ab "
+        "Wähle möglichst 5-6 Themen aus. Gib für JEDEN Vorschlag eine Entscheidung ab "
         "(auch für die nicht ausgewählten), jeweils mit Begründung.\n\n"
+        "Arbeite mit zwei Qualitätsstufen:\n"
+        "- Kategorie A: hohe unmittelbare Relevanz für Geschäftsführer kleiner oder mittlerer Unternehmen.\n"
+        "- Kategorie B: mittlere Relevanz, aber aktuell, sachlich belastbar und nützlich für "
+        "Marktbeobachtung, strategische Einordnung oder eine spätere Entscheidung.\n"
+        "Akzeptiere zuerst Kategorie A. Wenn dadurch weniger als 5 Themen zusammenkommen und "
+        "mindestens 5 geeignete Vorschläge vorliegen, fülle mit den besten Kategorie-B-Themen "
+        "bis auf mindestens 5 auf. Lehne weiterhin Duplikate, Gerüchte, veraltete oder völlig "
+        "belanglose Meldungen ab; die Mindestzahl darf niemals durch schlechte oder unbelegte "
+        "Inhalte erzwungen werden. Nenne in der Begründung die Kategorie A oder B.\n\n"
         "Für jeden Vorschlag gibt es drei mögliche Status:\n"
         "- 'akzeptiert': kommt in die Themen-Pipeline\n"
         "- 'zurueckgestellt': gut und relevant, aber heute kein Platz - wird morgen erneut geprüft\n"

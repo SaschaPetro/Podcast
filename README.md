@@ -324,6 +324,8 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 
 ## 8. Bekannte Einschränkungen
 
+*Detailliertes Fehlerverhalten pro Komponente: siehe Abschnitt 11 ("Fehler-Matrix").*
+
 - **Row Level Security ist aktuell deaktiviert** - keine der Tabellen hat RLS-Policies. Der Code verwendet direkt den Supabase-Service-Key; dieser Key darf niemals client-seitig (Browser, App) verwendet werden.
 - **Deepgram-Speed-Control funktioniert nur bei englischen Aura-2-Stimmen** (`DEEPGRAM_SPEED_SPRACHEN = ("en",)`). Das deutsche Standardmodell `aura-2-julius-de` lehnt Anfragen mit `speed`-Parameter komplett ab (400 Bad Request) - der Code umgeht das automatisch, indem er `speed` bei deutschen Stimmen weglässt.
 - **Deepgram hat ein Limit von 2000 Zeichen pro Anfrage.** Längere Manuskripte werden automatisch an Satzgrenzen in Chunks aufgeteilt (`_teile_text`) und die Audio-Teile zusammengefügt.
@@ -381,14 +383,29 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 
 **Voraussetzung: GitHub Secrets sind gesetzt.** Repo → Settings → Secrets and variables → Actions → "New repository secret" für jede der Variablen aus Abschnitt 7, die `morgenlauf.py` tatsächlich braucht (`SUPABASE_URL`, `SUPABASE_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`) - mit denselben Werten wie in der lokalen `.env`. Ohne `TAVILY_API_KEY`/`EXA_API_KEY` schlägt der Lauf nicht ab, die Zweite-Quelle-Verifikation (Abschnitt 5) wird für neue Themen nur übersprungen (Konsolen-Hinweis). Ohne die übrigen Secrets schlägt der Lauf beim ersten API-Aufruf fehl. (`OPENAI_API_KEY` wird aktuell von keinem Pipeline-Schritt gelesen - nur von `test_apis.py`, das nicht Teil des Workflows ist - und ist deshalb nicht im Workflow verdrahtet.)
 
-**Später: automatischen Zeitplan aktivieren.** In `.github/workflows/morgenlauf.yml` steht im `on:`-Block ein auskommentierter `schedule`-Vorschlag für "jeden Wochentag um 6:30 Uhr" (deutsche Zeit):
+**Später: automatischen Zeitplan aktivieren.** In `.github/workflows/morgenlauf.yml` steht im `on:`-Block ein auskommentierter `schedule`-Vorschlag für "jeden Wochentag um 5:30 Uhr" (deutsche Zeit) - lässt gut zwei Stunden Puffer bis zu einer 8-Uhr-Deadline, gemessen an der bisherigen Pipeline-Laufzeit von bis zu ~8 Minuten:
 
 ```yaml
 # schedule:
-#   - cron: "30 4 * * 1-5"
+#   - cron: "30 3 * * 1-5"
 ```
 
-GitHub-Actions-Cron läuft immer in UTC: `30 4` = 4:30 UTC, das entspricht 6:30 Uhr MESZ (Sommerzeit, UTC+2) bzw. 5:30 Uhr MEZ (Winterzeit, UTC+1) - der Wert müsste beim Zeitwechsel also strenggenommen angepasst werden, wenn 6:30 Uhr exakt gehalten werden soll (in der Praxis meist vernachlässigbar). `1-5` steht für Montag-Freitag. Zum Aktivieren einfach die beiden `#`-Zeilen entfernen und committen - danach läuft `morgenlauf.py` automatisch nach diesem Zeitplan, zusätzlich weiterhin manuell auslösbar.
+GitHub-Actions-Cron läuft immer in UTC: `30 3` = 3:30 UTC, das entspricht 5:30 Uhr MESZ (Sommerzeit, UTC+2). **Achtung beim Zeitwechsel:** Bei Wechsel auf Winterzeit (MEZ, UTC+1, ab Ende Oktober) muss der Wert um 1 Stunde nach vorne verschoben werden (`30 3` → `30 4`, also 3:30 → 4:30 UTC), sonst verschiebt sich der reale Lauf-Zeitpunkt um eine Stunde - das ist kein automatischer Vorgang, GitHub-Actions-Cron kennt keine Zeitzonen. `1-5` steht für Montag-Freitag. Zum Aktivieren einfach die beiden `#`-Zeilen entfernen und committen - danach läuft `morgenlauf.py` automatisch nach diesem Zeitplan, zusätzlich weiterhin manuell auslösbar.
+
+## 11. Fehler-Matrix
+
+Dokumentiert das **tatsächliche** Verhalten der Pipeline bei typischen Fehlerfällen - kein Soll-Zustand, sondern eine Bestandsaufnahme des aktuellen Codes.
+
+| Szenario | Tatsächliches Verhalten | Fundstelle |
+|---|---|---|
+| Einzelne RSS-Quelle nicht erreichbar | Pro-Feed-`try/except` in `main()`: Fehler wird geloggt, Schleife läuft mit dem nächsten Feed weiter. Schritt 1/9 zeigt sich am Ende **immer** als "erfolgreich" - auch wenn alle Feeds gleichzeitig ausfallen, dann eben mit 0 neuen Einträgen. | `rss_einlesen.py`, `main()` |
+| Recherche-/Redaktions-Schritt schlägt fehl (z.B. API-Kontingent) | **Kein** Try/Except pro Agent. Wirft ein Recherche-Agent eine Exception, bricht die komplette Schleife über alle Agenten sofort ab - bereits verarbeitete Agenten *vor* dem Fehler behalten ihre schon gespeicherten Vorschläge in der DB, nachfolgende Agenten in der Liste laufen gar nicht mehr. Der gesamte Pipeline-Schritt (2/9 bzw. 3/9) wird als "fehlgeschlagen" markiert, die Pipeline läuft mit dem nächsten Schritt weiter. | `recherche_und_redaktion.py`, `fuehre_recherche_agenten_aus()`/`fuehre_redaktion_aus()`; `morgenlauf.py`, `fuehre_schritt_aus()` |
+| Kein offenes Thema für ein Manuskript vorhanden | `erstelle_episode()` gibt `None` zurück - **kein Fehler**, Schritt 6/9 zeigt "erfolgreich" (nur mit Hinweistext "keine offenen Themen"). Schritt 7/9 (Faktencheck) und 8/9 (Audio) werden danach explizit als "übersprungen" markiert. | `generiere_episode.py`, `erstelle_episode()`; `morgenlauf.py`, `main()` |
+| Faktencheck findet einen Widerspruch | Die Prüfung selbst läuft erfolgreich durch, setzt `episoden.status` auf `pruefung_fehlgeschlagen`. Schritt 7/9 zeigt "erfolgreich" (die Prüfung *funktioniert* ja). Schritt 8/9 (Audio) wird explizit übersprungen, Episode bleibt unvertont bis zur manuellen Prüfung. *Anderer Fall, falls der Faktencheck-Schritt selbst abstürzt (z.B. Gemini-Fehler statt gefundenem Widerspruch): Schritt 7/9 wird "fehlgeschlagen", `episoden.status` bleibt beim Default `ungeprueft` (nie umgesetzt), Audio wird ebenfalls übersprungen ("Faktencheck fehlgeschlagen").* | `generiere_episode.py`, `pruefe_manuskript()`; `morgenlauf.py`, `main()` |
+| TTS-Erzeugung schlägt fehl | `_via_deepgram()`/`_via_elevenlabs()` haben **kein eigenes** Try/Except - die Exception propagiert bis `fuehre_schritt_aus()` hoch, Schritt 8/9 wird "fehlgeschlagen". Da `erzeuge_audio_fuer_episode()` den DB-Update-Aufruf dadurch nie erreicht, bleiben `episoden.audio_pfad` **und** `audio_url` unverändert (meist `NULL`) - selbst wenn lokal bereits eine unvollständige Datei geschrieben wurde. | `generiere_audio.py`, `_via_deepgram()`/`_via_elevenlabs()` |
+| Supabase Storage Upload schlägt fehl | `lade_audio_hoch()` ist explizit try/except-geschützt: nur eine Konsolen-Warnung, gibt `None` zurück. `audio_url` bleibt `NULL`, `audio_pfad` (lokaler Pfad) wird trotzdem normal gesetzt. Schritt 8/9 zeigt sich als "erfolgreich" (nur ohne öffentliche URL in der Zusammenfassung). | `generiere_audio.py`, `lade_audio_hoch()` |
+| Datenbank nicht erreichbar | Kein zentraler Kill-Switch, kein Retry irgendwo in der Pipeline - Verhalten ist uneinheitlich: In `rss_einlesen.py` landet ein DB-Fehler im selben Pro-Feed-`try/except` wie ein Netzwerkfehler → Schritt zeigt trotzdem "erfolgreich". In den meisten anderen Schritten gibt es kein eigenes Try/Except um DB-Aufrufe → Exception propagiert bis `fuehre_schritt_aus()`, Schritt "fehlgeschlagen", Pipeline läuft trotzdem weiter (meist ebenso erfolglos, da dieselbe DB betroffen ist). `starte_lauf_protokoll()`/`aktualisiere_lauf_protokoll()` sind eigens try/except-geschützt (nur Konsolen-Warnung). | verstreut über alle Module; zentral `morgenlauf.py`, `fuehre_schritt_aus()` |
+| Lauf insgesamt nicht rechtzeitig fertig | **Bekannte Lücke:** Keine Uhrzeit-/Deadline-Prüfung im Python-Code (kein einziger Treffer für "deadline"/"timeout" in der ganzen Codebase). Einziger Schutz ist `timeout-minutes: 30` auf Job-Ebene im GitHub-Actions-Workflow - bricht nach 30 Minuten hart ab, unabhängig von einer 8-Uhr-Deadline. Der Artefakt-Upload-Schritt (`if: always()`) läuft laut GitHub-Actions-Verhalten auch bei einem Timeout-Abbruch noch, liefert dann aber ggf. nur ein unvollständiges `lauf.log`. | `.github/workflows/morgenlauf.yml` (`timeout-minutes: 30`) - keine Entsprechung in `morgenlauf.py` |
 
 ---
 

@@ -7,10 +7,10 @@ angewendet sein (Spalte "embedding" ist dann vector(768) statt vector(1536)).
 import os
 import sys
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
+from gemini_client import erzeuge_embedding as erzeuge_gemini_embedding
 import kosten_tracking
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -28,9 +28,9 @@ def hole_supabase_client():
 
 
 def erzeuge_embedding(supabase, text: str) -> list[float]:
-    antwort = genai.embed_content(
-        model=EMBEDDING_MODEL,
-        content=text,
+    embedding = erzeuge_gemini_embedding(
+        modell=EMBEDDING_MODEL,
+        text=text,
         task_type="retrieval_document",
         output_dimensionality=EMBEDDING_DIM,
     )
@@ -45,11 +45,10 @@ def erzeuge_embedding(supabase, text: str) -> list[float]:
         menge_input=tokens,
     )
 
-    return antwort["embedding"]
+    return embedding
 
 
 def main():
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
     supabase = hole_supabase_client()
 
     ergebnis = (

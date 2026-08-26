@@ -59,6 +59,10 @@ AUDIO_ANBIETER = "deepgram"
 AUDIO_ORDNER = "output"
 
 
+def faktencheck_blockiert_audio(ergebnis: dict) -> bool:
+    return ergebnis.get("widerspruch", 0) > 0 or ergebnis.get("nicht_belegt", 0) > 0
+
+
 def erzeuge_audio_fuer_episode(episode: dict, lauf_id: str | None = None) -> dict:
     episode_id = episode["id"]
     manuskripttext = episode["manuskripttext"]
@@ -178,12 +182,13 @@ def main() -> None:
         )
     elif schritt_faktencheck["status"] != "erfolgreich":
         schritte.append(pipeline_utils.markiere_uebersprungen("3/4 Audio erzeugen", "Faktencheck fehlgeschlagen"))
-    elif faktencheck_ergebnis["widerspruch"] > 0:
+    elif faktencheck_blockiert_audio(faktencheck_ergebnis):
         schritte.append(
             pipeline_utils.markiere_uebersprungen(
                 "3/4 Audio erzeugen",
-                f'Faktencheck hat {faktencheck_ergebnis["widerspruch"]} Widerspruch/Widersprüche '
-                "gefunden - Episode nicht freigegeben",
+                f'Faktencheck hat {faktencheck_ergebnis["widerspruch"]} Widerspruch/Widersprüche und '
+                f'{faktencheck_ergebnis["nicht_belegt"]} unbelegte Behauptung(en) gefunden - '
+                "Episode nicht freigegeben",
             )
         )
     else:

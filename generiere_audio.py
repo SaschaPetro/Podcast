@@ -12,6 +12,7 @@ Bucket "episoden-audio" (öffentlich lesbar) muss existieren.
 import os
 import re
 import sys
+import tempfile
 
 from deepgram import DeepgramClient
 from dotenv import load_dotenv
@@ -51,8 +52,61 @@ def _unterstuetzt_speed(model: str) -> bool:
     return any(model.endswith(f"-{sprache}") for sprache in DEEPGRAM_SPEED_SPRACHEN)
 
 
+_URL = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+_UEBERSCHRIFT = re.compile(r"^#{1,6}\s+|^[A-ZÄÖÜ0-9][A-ZÄÖÜ0-9 /&–-]{3,}:?$")
+_ABKUERZUNGEN = {
+    "z. B.": "zum Beispiel",
+    "d. h.": "das heißt",
+    "u. a.": "unter anderem",
+    "KMU": "kleine und mittlere Unternehmen",
+    "KI": "K I",
+    "EU": "E U",
+}
+
+
+def bereite_tts_text_auf(text: str) -> str:
+    """Entfernt nicht sprechbare Elemente und setzt hörbare Abschnittspausen."""
+    zeilen = []
+    for rohzeile in text.splitlines():
+        zeile = _URL.sub("", rohzeile).strip()
+        if not zeile:
+            if zeilen and zeilen[-1] != "":
+                zeilen.append("")
+            continue
+        ist_ueberschrift = bool(_UEBERSCHRIFT.match(zeile))
+        zeile = re.sub(r"^#{1,6}\s+", "", zeile).rstrip(":")
+        for kurz, gesprochen in _ABKUERZUNGEN.items():
+            zeile = zeile.replace(kurz, gesprochen)
+        zeile = re.sub(r"(\d+(?:[.,]\d+)?)\s*%", r"\1 Prozent", zeile)
+        zeile = re.sub(r"€\s*(\d+(?:[.,]\d+)?)", r"\1 Euro", zeile)
+        zeile = re.sub(r"(\d+(?:[.,]\d+)?)\s*€", r"\1 Euro", zeile)
+        if ist_ueberschrift:
+            if zeilen and zeilen[-1] != "":
+                zeilen.append("")
+            zeile = f"{zeile}."
+        zeilen.append(zeile)
+        if ist_ueberschrift:
+            zeilen.append("")
+    return "\n".join(zeilen).strip()
+
+
+def _teile_langen_satz(satz: str, max_laenge: int) -> list[str]:
+    if len(satz) <= max_laenge:
+        return [satz]
+    teile = re.split(r"(?<=[,;:–-])\s+", satz)
+    if any(len(teil) > max_laenge for teil in teile):
+        raise ValueError("Ein einzelner Satz ist länger als das TTS-Limit und nicht sicher teilbar.")
+    return teile
+
+
 def _teile_text(text: str, max_laenge: int = DEEPGRAM_TEXT_LIMIT) -> list[str]:
-    saetze = re.split(r"(?<=[.!?])\s+", text.strip())
+    text = bereite_tts_text_auf(text)
+    saetze = []
+    for abschnitt in re.split(r"\n\s*\n", text):
+        abschnitt_saetze = re.split(r"(?<=[.!?])\s+", abschnitt.strip())
+        saetze.extend(teil for satz in abschnitt_saetze for teil in _teile_langen_satz(satz, max_laenge))
+        if saetze:
+            saetze[-1] += "\n\n"
     chunks: list[str] = []
     aktueller = ""
     for satz in saetze:
@@ -63,7 +117,7 @@ def _teile_text(text: str, max_laenge: int = DEEPGRAM_TEXT_LIMIT) -> list[str]:
         else:
             aktueller = kandidat
     if aktueller:
-        chunks.append(aktueller)
+        chunks.append(aktueller.strip())
     return chunks
 
 
@@ -103,8 +157,24 @@ def _via_deepgram(text: str, dateipfad: str, speed: float = DEEPGRAM_SPEED_STAND
         else:
             audio_teile.append(b"".join(client.speak.v1.audio.generate(text=chunk, model=DEEPGRAM_MODEL)))
 
-    with open(dateipfad, "wb") as f:
-        f.write(b"".join(audio_teile))
+    _schreibe_atomar(dateipfad, b"".join(audio_teile))
+
+
+def _schreibe_atomar(dateipfad: str, audio_bytes: bytes) -> None:
+    """Veröffentlicht die Zieldatei erst, nachdem alle Audioblöcke vorliegen."""
+    zielordner = os.path.dirname(os.path.abspath(dateipfad))
+    os.makedirs(zielordner, exist_ok=True)
+    temp_pfad = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=zielordner, suffix=".mp3.tmp", delete=False) as tmp:
+            temp_pfad = tmp.name
+            tmp.write(audio_bytes)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(temp_pfad, dateipfad)
+    finally:
+        if temp_pfad and os.path.exists(temp_pfad):
+            os.unlink(temp_pfad)
 
 
 def _via_elevenlabs(text: str, dateipfad: str) -> None:
@@ -112,14 +182,13 @@ def _via_elevenlabs(text: str, dateipfad: str) -> None:
     audio_bytes = b"".join(
         client.text_to_speech.convert(
             voice_id=ELEVENLABS_VOICE_ID,
-            text=text,
+            text=bereite_tts_text_auf(text),
             model_id=ELEVENLABS_MODEL,
             output_format="mp3_44100_128",
         )
     )
 
-    with open(dateipfad, "wb") as f:
-        f.write(audio_bytes)
+    _schreibe_atomar(dateipfad, audio_bytes)
 
 
 def lade_audio_hoch(supabase, dateipfad: str, episode_id: str) -> str | None:

@@ -56,19 +56,20 @@ import json
 import os
 import sys
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
 import generiere_episode
 import kosten_tracking
+from gemini_client import GeminiModell
+import modelle
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
-CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
+CHAT_MODEL = modelle.modell_fuer("rhetorik_pruefung")
 MINDEST_EPISODEN = 4
 
 
@@ -77,8 +78,7 @@ def hole_supabase_client():
 
 
 def hole_chat_model():
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    return genai.GenerativeModel(CHAT_MODEL)
+    return GeminiModell(CHAT_MODEL)
 
 
 def hole_rhetorik_agent(supabase) -> dict:

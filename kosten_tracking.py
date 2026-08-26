@@ -9,7 +9,7 @@ hole_kosten_summe() aggregiert bestehende Einträge nach lauf_id/episode_id.
 
 Voraussetzung: Migration 20260825090000_api_kosten.sql muss angewendet sein.
 """
-import google.generativeai as genai
+from gemini_client import zaehle_tokens as zaehle_gemini_tokens
 
 # ==========================================================================
 # PREISTABELLE — muss manuell aktuell gehalten werden!
@@ -101,13 +101,11 @@ def logge_api_kosten(
 def zaehle_tokens(modell: str, text: str) -> int:
     """Ermittelt die echte Tokenzahl für `text` über einen kostenlosen
     count_tokens()-Call. Für Aufrufe wie embed_content, die selbst keine
-    usage_metadata liefern. Voraussetzung: genai.configure() wurde vom
-    Aufrufer bereits ausgeführt. Fällt bei Fehlern auf eine grobe Schätzung
+    usage_metadata liefern. Fällt bei Fehlern auf eine grobe Schätzung
     (Zeichenzahl / 4) zurück, damit die Kosten-Erfassung nicht an einem
     einzelnen fehlgeschlagenen count_tokens()-Call scheitert."""
     try:
-        antwort = genai.GenerativeModel(modell).count_tokens(text)
-        return antwort.total_tokens
+        return zaehle_gemini_tokens(modell, text)
     except Exception as e:
         geschaetzt = max(1, len(text) // 4)
         print(

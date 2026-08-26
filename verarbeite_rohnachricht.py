@@ -14,11 +14,12 @@ import os
 import sys
 from datetime import datetime, timezone
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
 import kosten_tracking
+from gemini_client import GeminiModell, erzeuge_embedding as erzeuge_gemini_embedding
+import modelle
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -28,21 +29,20 @@ load_dotenv()
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_MODEL_KURZ = "gemini-embedding-001"
 EMBEDDING_DIM = 768
-CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
+CHAT_MODEL = modelle.modell_fuer("neuigkeit_pruefung")
 SCHWELLENWERT = 0.85
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-chat_model = genai.GenerativeModel(CHAT_MODEL)
+chat_model = GeminiModell(CHAT_MODEL)
 
 
 def erzeuge_embedding(text: str, lauf_id: str | None = None) -> list[float]:
     # Gleicher task_type wie im Backfill, da dasselbe Embedding sowohl für den
     # Ähnlichkeitsvergleich als auch (falls kein Treffer) für die Neuanlage
     # eines Themas verwendet wird.
-    antwort = genai.embed_content(
-        model=EMBEDDING_MODEL,
-        content=text,
+    embedding = erzeuge_gemini_embedding(
+        modell=EMBEDDING_MODEL,
+        text=text,
         task_type="retrieval_document",
         output_dimensionality=EMBEDDING_DIM,
     )
@@ -58,7 +58,7 @@ def erzeuge_embedding(text: str, lauf_id: str | None = None) -> list[float]:
         lauf_id=lauf_id,
     )
 
-    return antwort["embedding"]
+    return embedding
 
 
 def hole_letztes_update(thema_id: str) -> str | None:

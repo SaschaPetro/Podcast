@@ -55,13 +55,14 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 from exa_py import Exa
 from supabase import create_client
 from tavily import TavilyClient
 
 import kosten_tracking
+from gemini_client import GeminiModell
+import modelle
 import verarbeite_rohnachricht
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -69,7 +70,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
-CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
+CHAT_MODEL = modelle.modell_fuer("recherche_auswahl")
 MAX_ALTER_TAGE = 3
 MAX_ZURUECKSTELLUNG_TAGE = 3
 GUELTIGE_STATUS = {"akzeptiert", "abgelehnt", "zurueckgestellt"}
@@ -81,8 +82,7 @@ def hole_supabase_client():
 
 
 def hole_chat_model():
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    return genai.GenerativeModel(CHAT_MODEL)
+    return GeminiModell(CHAT_MODEL)
 
 
 def baue_systemkontext(fokus_beschreibung: str, zusatz_anweisung: str | None) -> str:

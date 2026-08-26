@@ -57,7 +57,8 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL_NAME: ${{ secrets.GEMINI_MODEL_NAME }}
+          GEMINI_FAST_MODEL: ${{ vars.GEMINI_FAST_MODEL }}
+          GEMINI_QUALITY_MODEL: ${{ vars.GEMINI_QUALITY_MODEL }}
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
         run: |

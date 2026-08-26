@@ -63,23 +63,25 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
 
+from gemini_client import GeminiModell
 import kosten_tracking
+import modelle
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
-CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
+MANUSKRIPT_MODELL = modelle.modell_fuer("manuskript_erstellung")
+FAKTENCHECK_MODELL = modelle.modell_fuer("faktencheck")
 OFFENE_STATUS = ("neu", "in Verfolgung")
-MANUSKRIPT_ZIEL_MIN_WOERTER = 1300
-MANUSKRIPT_ZIEL_MAX_WOERTER = 1450
-MANUSKRIPT_HARTE_MIN_WOERTER = 1200
-MANUSKRIPT_MAX_VERSUCHE = 5
+MANUSKRIPT_ZIEL_MIN_WOERTER = 1400
+MANUSKRIPT_ZIEL_MAX_WOERTER = 1600
+MANUSKRIPT_HARTE_MIN_WOERTER = 1350
+MANUSKRIPT_MAX_VERSUCHE = 2
 MANUSKRIPT_MAX_OUTPUT_TOKENS = 8192
 PFLICHT_PLATZHALTER = (
     "{PERSONA}",
@@ -121,9 +123,8 @@ def hole_wochenende_daten(heute: datetime) -> tuple[str, str]:
     return samstag, sonntag
 
 
-def hole_chat_model():
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    return genai.GenerativeModel(CHAT_MODEL)
+def hole_chat_model(modellname: str = MANUSKRIPT_MODELL):
+    return GeminiModell(modellname)
 
 
 def hole_moderator_persona(supabase) -> str:
@@ -409,8 +410,18 @@ Storytelling ist ausschließlich ein Werkzeug zur Erklärung und kommt erst NACH
 
 Formuliere sachlich, direkt und hörbar. Spannung entsteht aus Relevanz, Konsequenzen und überraschenden Fakten – nicht aus Dramatisierung. Wenn eine Stilregel im übrigen Prompt dieser Leitlinie widerspricht, hat diese Leitlinie Vorrang.
 
+SPRACHE UND DRAMATURGIE FÜR GESPROCHENES DEUTSCH:
+Schreibe wie eine professionelle deutsche Nachrichtenredaktion für das Ohr. Verwende kurze, gut sprechbare Sätze, aktive Verben und konkrete Subjekte. Erkläre jeden unvermeidbaren Fachbegriff beim ersten Auftreten in einem einfachen Halbsatz. Verbinde Themen mit inhaltlich begründeten Übergängen, nicht mit Standardsätzen. Erkläre bei jedem Thema konkret, warum es für kleine und mittlere Unternehmen relevant ist. Bei einer Fortsetzung nennst du zuerst knapp den bisherigen Stand und danach klar die tatsächliche Neuigkeit.
+
+Beginne nach Pflichtkennzeichnung und kurzer Begrüßung mit der stärksten belegten Nachricht. Ende mit einer knappen Zusammenfassung der zwei oder drei wichtigsten Folgen. Schreibe für vorgelesene Sprache, nicht wie einen Blogartikel: keine Listen, Markdown-Überschriften, Fußnoten oder vorgelesenen URLs. Quellen erscheinen vollständig in den Show Notes und werden im Manuskript nur natürlich benannt, wenn die Einordnung es erfordert.
+
+Verboten sind unbelegte Ergänzungen sowie typische KI-Floskeln und Übertreibungen. Verwende insbesondere nicht: „In der heutigen schnelllebigen Welt“, „Es bleibt spannend“, „Die Zukunft wird zeigen“, „Ein echter Gamechanger“, „Tauchen wir ein“ und „Zusammenfassend lässt sich sagen“. Vermeide rhetorische Fragen, wiederholte Begrüßungen und immer gleiche Übergänge.
+
+FAKTENTREUE:
+Nutze ausschließlich Zahlen, Namen, Daten und konkrete Tatsachen, die im bereitgestellten Themen- und Quellenmaterial stehen. Wenn eine Information dort fehlt, lasse sie weg. Erfinde keine plausibel klingenden Details, Beispiele, Prognosen oder Handlungsempfehlungen mit Tatsachencharakter.
+
 LÄNGE UND SENDEDAUER:
-Das Manuskript muss 1.300 bis 1.450 Wörter umfassen. Das entspricht bei der verwendeten deutschen Stimme ungefähr zehn Minuten. Plane bei fünf Themen etwa 230 bis 260 Wörter je Thema; bei sechs Themen etwa 195 bis 220 Wörter je Thema. Nutze die Länge für belegte Details, Hintergrund, Zusammenhänge, Folgen für Unternehmen und konkrete Handlungsmöglichkeiten – niemals für zusätzliche Szenen, Wiederholungen oder Füllsätze. Prüfe die Wortzahl vor der Ausgabe selbst. Unter 1.200 Wörtern ist das Manuskript unvollständig.
+Das Manuskript muss 1.400 bis 1.600 Wörter umfassen. Das entspricht ungefähr zehn Minuten. Nutze die Länge für belegte Details, verständliche Einordnung, Folgen für Unternehmen und konkrete, aus den Quellen ableitbare Handlungsmöglichkeiten – niemals für Wiederholungen oder Füllsätze. Prüfe die Wortzahl vor der Ausgabe selbst. Unter 1.350 Wörtern ist das Manuskript unvollständig.
 """
     if zusatz_anweisung:
         prompt += f"\n\n--- Zusätzliche Anweisung für diesen Durchlauf ---\n{zusatz_anweisung}"
@@ -467,7 +478,7 @@ def erstelle_manuskript(
         kosten_tracking.logge_api_kosten(
             supabase,
             dienst="gemini",
-            modell=CHAT_MODEL,
+            modell=MANUSKRIPT_MODELL,
             schritt="manuskript_erstellung",
             einheit_typ="tokens",
             menge_input=rohantwort.usage_metadata.prompt_token_count,
@@ -502,7 +513,7 @@ def erstelle_episode(
     zusatz_anweisung: str | None = None, format: str | None = None, lauf_id: str | None = None
 ) -> dict | None:
     supabase = hole_supabase_client()
-    chat_model = hole_chat_model()
+    chat_model = hole_chat_model(MANUSKRIPT_MODELL)
 
     heute = datetime.now(timezone.utc)
     aktives_format = bestimme_format(format, heute)
@@ -687,25 +698,25 @@ def baue_quellen_block(themen: list[dict], quellen_nach_thema: dict[str, list[di
         if quellen:
             quellentext = "\n\n".join(f'Quelle "{q["titel"]}":\n{q["text"]}' for q in quellen)
         else:
-            quellentext = t.get("zusammenfassung") or "(keine Quelle gefunden)"
+            quellentext = "(keine gespeicherte Originalquelle)"
         bloecke.append(f'=== Thema: {t["titel"]} ===\n{quellentext}')
     return "\n\n".join(bloecke)
 
 
 def baue_faktencheck_prompt(manuskripttext: str, quellen_block: str) -> str:
     return (
-        "Du bist Fakten-Checker für einen Podcast. Prüfe jede konkrete Zahl, "
-        "jeden Eigennamen (Personen, Firmen, Produkte) und jede Datumsangabe im "
+        "Du bist ein strenger Fakten-Checker für einen Podcast. Extrahiere und prüfe jede "
+        "konkrete Tatsachenbehauptung, insbesondere jede Zahl, jeden Eigennamen "
+        "(Personen, Firmen, Produkte), jedes Datum und jede kausale Aussage im "
         "folgenden Manuskript gegen die beigefügten Original-Quellen.\n\n"
         "Für jede solche konkrete Behauptung entscheide:\n"
         '- "bestaetigt": steht so oder so ähnlich in den Quellen\n'
         '- "widerspruch": widerspricht den Quellen (z.B. andere Zahl, anderer Name, '
         "anderes Datum)\n"
-        '- "nicht_belegt": lässt sich in den Quellen nicht finden (kann ein bewusst '
-        "erfundenes Beispiel/Szenario im Storytelling sein, nicht zwingend ein Fehler)\n\n"
-        "Ignoriere reine Stilmittel, erfundene Alltagsszenarien/Beispiele, die klar "
-        "illustrativ sind und keine konkrete Zahl/keinen Namen/kein Datum enthalten, "
-        "sowie Meinungs- oder Humor-Passagen des Moderators.\n\n"
+        '- "nicht_belegt": lässt sich in keiner gespeicherten Originalquelle finden\n\n'
+        "Bewerte nur anhand der gelieferten Quellen. Plausibilität oder Modellwissen gelten "
+        "nicht als Beleg. Zerlege Sätze mit mehreren Fakten in einzelne Behauptungen. "
+        "Ignoriere nur eindeutig als Meinung markierte Wertungen ohne Tatsachenkern.\n\n"
         f"QUELLEN:\n{quellen_block}\n\n"
         f"MANUSKRIPT:\n{manuskripttext}\n\n"
         "Antworte NUR mit einer JSON-Liste, jedes Element in diesem Format:\n"
@@ -718,10 +729,19 @@ def pruefe_manuskript(
     episode_id: str, manuskripttext: str, themen: list[dict], lauf_id: str | None = None
 ) -> dict:
     supabase = hole_supabase_client()
-    chat_model = hole_chat_model()
+    if not themen:
+        raise RuntimeError("Faktencheck ohne verwendete Themen nicht möglich.")
+
+    chat_model = hole_chat_model(FAKTENCHECK_MODELL)
 
     thema_ids = [t["id"] for t in themen]
     quellen_nach_thema = hole_quellen_fuer_themen(supabase, thema_ids)
+    fehlende_quellen = [t["titel"] for t in themen if not quellen_nach_thema.get(t["id"])]
+    if fehlende_quellen:
+        raise RuntimeError(
+            "Faktencheck abgebrochen: keine gespeicherte Originalquelle für: "
+            + ", ".join(fehlende_quellen)
+        )
     quellen_block = baue_quellen_block(themen, quellen_nach_thema)
 
     prompt = baue_faktencheck_prompt(manuskripttext, quellen_block)
@@ -732,7 +752,7 @@ def pruefe_manuskript(
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=FAKTENCHECK_MODELL,
         schritt="faktencheck",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,
@@ -742,12 +762,14 @@ def pruefe_manuskript(
     )
 
     details = json.loads(antwort.text)
+    if not isinstance(details, list) or not details:
+        raise RuntimeError("Faktencheck lieferte keine prüfbaren Behauptungen; keine Freigabe möglich.")
 
     zaehler = {"bestaetigt": 0, "widerspruch": 0, "nicht_belegt": 0}
     for d in details:
         status = d.get("status")
         if status not in zaehler:
-            continue
+            raise RuntimeError(f'Faktencheck lieferte ungültigen Status: "{status}".')
         zaehler[status] += 1
         if status == "widerspruch":
             print(f'  WIDERSPRUCH: "{d.get("behauptung")}" (Thema: {d.get("quelle_thema")})')
@@ -755,7 +777,8 @@ def pruefe_manuskript(
             print(f'  nicht belegt: "{d.get("behauptung")}" (Thema: {d.get("quelle_thema")})')
 
     ergebnis = {**zaehler, "details": details}
-    neuer_status = "pruefung_fehlgeschlagen" if zaehler["widerspruch"] > 0 else "freigegeben"
+    blockierende_funde = zaehler["widerspruch"] + zaehler["nicht_belegt"]
+    neuer_status = "pruefung_fehlgeschlagen" if blockierende_funde > 0 else "freigegeben"
 
     supabase.table("episoden").update(
         {"faktencheck_ergebnis": ergebnis, "status": neuer_status}

@@ -76,6 +76,10 @@ load_dotenv()
 
 CHAT_MODEL = os.environ["GEMINI_MODEL_NAME"]
 OFFENE_STATUS = ("neu", "in Verfolgung")
+MANUSKRIPT_ZIEL_MIN_WOERTER = 1300
+MANUSKRIPT_ZIEL_MAX_WOERTER = 1450
+MANUSKRIPT_HARTE_MIN_WOERTER = 1200
+MANUSKRIPT_MAX_VERSUCHE = 2
 PFLICHT_PLATZHALTER = (
     "{PERSONA}",
     "{THEMEN_BLOCK}",
@@ -389,6 +393,24 @@ def baue_manuskript_prompt(
         .replace("{KI_KENNZEICHNUNG_HINWEIS}", baue_ki_kennzeichnung_hinweis())
         .replace("{EROEFFNUNGSSIGNATUR}", eroeffnungssignatur)
     )
+    prompt += """
+
+--- VERBINDLICHE REDAKTIONELLE LEITLINIE: NACHRICHTEN VOR STORYTELLING ---
+
+Das Ergebnis ist eine Nachrichtensendung, keine Geschichte und kein Hörspiel. Der Nachrichtenkern muss bei jedem Thema innerhalb der ersten zwei Sätze klar sein: Was ist neu, wer ist betroffen und warum ist es relevant?
+
+Baue jeden Themenblock in dieser Reihenfolge auf:
+1. Die neue, belegte Nachricht in einem klaren Satz.
+2. Den nötigen Kontext: Was hat zu dieser Entwicklung geführt?
+3. Die konkrete Bedeutung für Unternehmen und gegebenenfalls einen Handlungsschritt.
+
+Storytelling ist ausschließlich ein Werkzeug zur Erklärung und kommt erst NACH dem Nachrichtenkern und dem belegten Kontext. Nutze höchstens ein kurzes, sachnahes Beispiel, wenn es einen komplizierten Zusammenhang erklärt. Erfinde keine Figuren, Dialoge, Schauplätze, Tagesabläufe oder dramatischen Szenen. Beginne nicht mit einer Atmosphäre oder Spannungskurve. Halte Beispiele deutlich kürzer als die eigentliche Nachricht und kehre sofort zu den belegten Fakten zurück. Wenn kein Beispiel zum Verständnis nötig ist, verwende gar kein Storytelling.
+
+Formuliere sachlich, direkt und hörbar. Spannung entsteht aus Relevanz, Konsequenzen und überraschenden Fakten – nicht aus Dramatisierung. Wenn eine Stilregel im übrigen Prompt dieser Leitlinie widerspricht, hat diese Leitlinie Vorrang.
+
+LÄNGE UND SENDEDAUER:
+Das Manuskript muss 1.300 bis 1.450 Wörter umfassen. Das entspricht bei der verwendeten deutschen Stimme ungefähr zehn Minuten. Plane bei fünf Themen etwa 230 bis 260 Wörter je Thema; bei sechs Themen etwa 195 bis 220 Wörter je Thema. Nutze die Länge für belegte Details, Hintergrund, Zusammenhänge, Folgen für Unternehmen und konkrete Handlungsmöglichkeiten – niemals für zusätzliche Szenen, Wiederholungen oder Füllsätze. Prüfe die Wortzahl vor der Ausgabe selbst. Unter 1.200 Wörtern ist das Manuskript unvollständig.
+"""
     if zusatz_anweisung:
         prompt += f"\n\n--- Zusätzliche Anweisung für diesen Durchlauf ---\n{zusatz_anweisung}"
     return prompt
@@ -412,21 +434,42 @@ def erstelle_manuskript(
     prompt = baue_manuskript_prompt(
         supabase, persona, themen_block, zusatz_anweisung, eroeffnungssignatur, format_hinweis, wochenrueckblick_block
     )
-    rohantwort = chat_model.generate_content(prompt)
+    antwort = ""
+    for versuch in range(1, MANUSKRIPT_MAX_VERSUCHE + 1):
+        versuchs_prompt = prompt
+        if versuch > 1:
+            versuchs_prompt += (
+                "\n\nDer vorherige Entwurf war deutlich zu kurz. Schreibe das Manuskript vollständig "
+                f"neu mit {MANUSKRIPT_ZIEL_MIN_WOERTER}-{MANUSKRIPT_ZIEL_MAX_WOERTER} Wörtern. "
+                "Erweitere ausschließlich die journalistische Substanz: belegte Details, Hintergrund, "
+                "Zusammenhänge, Folgen für Unternehmen und konkrete Handlungsmöglichkeiten. Verwende "
+                "kein zusätzliches Storytelling und keine Wiederholungen. Zähle die Wörter vor der Ausgabe."
+            )
 
-    kosten_tracking.logge_api_kosten(
-        supabase,
-        dienst="gemini",
-        modell=CHAT_MODEL,
-        schritt="manuskript_erstellung",
-        einheit_typ="tokens",
-        menge_input=rohantwort.usage_metadata.prompt_token_count,
-        menge_output=rohantwort.usage_metadata.candidates_token_count,
-        lauf_id=lauf_id,
-        episode_id=episode_id,
-    )
+        rohantwort = chat_model.generate_content(versuchs_prompt)
+        kosten_tracking.logge_api_kosten(
+            supabase,
+            dienst="gemini",
+            modell=CHAT_MODEL,
+            schritt="manuskript_erstellung",
+            einheit_typ="tokens",
+            menge_input=rohantwort.usage_metadata.prompt_token_count,
+            menge_output=rohantwort.usage_metadata.candidates_token_count,
+            lauf_id=lauf_id,
+            episode_id=episode_id,
+        )
+        antwort = rohantwort.text.strip()
+        manuskript_ohne_ids = _IDS_ZEILE.sub("", antwort).strip()
+        wortzahl = len(manuskript_ohne_ids.split())
+        print(f"-> Manuskript-Versuch {versuch}: {wortzahl} Wörter.")
+        if wortzahl >= MANUSKRIPT_HARTE_MIN_WOERTER:
+            break
 
-    antwort = rohantwort.text.strip()
+    if len(_IDS_ZEILE.sub("", antwort).strip().split()) < MANUSKRIPT_HARTE_MIN_WOERTER:
+        raise RuntimeError(
+            f"Manuskript nach {MANUSKRIPT_MAX_VERSUCHE} Versuchen kürzer als "
+            f"{MANUSKRIPT_HARTE_MIN_WOERTER} Wörter - Episode wird nicht gespeichert."
+        )
 
     treffer = _IDS_ZEILE.search(antwort)
     if not treffer:

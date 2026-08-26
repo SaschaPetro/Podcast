@@ -128,6 +128,16 @@ def baue_rhetorik_prompt(fokus_beschreibung: str, episoden: list[dict]) -> str:
     )
     return (
         f"{fokus_beschreibung}\n\n"
+        "Bewerte besonders streng, ob die Folgen weiterhin als Nachrichtensendung "
+        "erkennbar sind. Der Nachrichtenkern jedes Themas muss innerhalb der ersten "
+        "zwei Sätze stehen. Markiere als konkretes Problem: erfundene Figuren oder "
+        "Dialoge, ausgedehnte Alltagsszenen, künstliche Spannungskurven, atmosphärische "
+        "Einstiege vor der eigentlichen Meldung und Beispiele, die länger sind als die "
+        "Nachricht selbst. Storytelling ist nur dann gelungen, wenn es erst nach dem "
+        "Nachrichtenkern eingesetzt wird, einen komplexen Zusammenhang kurz verständlich "
+        "macht und sofort zu belegten Fakten zurückführt. Beanstande Storytelling auch "
+        "dann, wenn ein Abschnitt ohne dieses Stilmittel genauso verständlich wäre. Prüfe "
+        "außerdem, ob die Folge ungefähr 1.300 bis 1.450 Wörter erreicht.\n\n"
         f"Hier sind die letzten {len(episoden)} Episoden-Manuskripte in chronologischer "
         f"Reihenfolge (älteste zuerst):\n\n"
         f"{episoden_block}\n\n"

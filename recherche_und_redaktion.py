@@ -587,7 +587,11 @@ def pruefe_updates_zu_gesendeten_themen(
 
 
 def fuehre_recherche_agenten_aus(zusatz_anweisung: str | None = None, lauf_id: str | None = None) -> None:
-    """Lässt alle aktiven Recherche-Agenten über neue Rohnachrichten laufen."""
+    """Lässt alle aktiven Recherche-Agenten über neue Rohnachrichten laufen.
+
+    Schlägt ein Agent fehl (z.B. API-Kontingent), wird das geloggt und mit dem
+    nächsten Agenten weitergemacht - bereits gespeicherte Vorschläge anderer
+    Agenten (vor UND nach dem gescheiterten) bleiben unberührt."""
     supabase = hole_supabase_client()
     chat_model = hole_chat_model()
 
@@ -598,11 +602,25 @@ def fuehre_recherche_agenten_aus(zusatz_anweisung: str | None = None, lauf_id: s
 
     print(f"{len(agenten)} aktive(r) Recherche-Agent(en) gefunden.\n")
 
-    gesamt = sum(
-        fuehre_recherche_fuer_agenten_aus(supabase, chat_model, agent, zusatz_anweisung, lauf_id=lauf_id)
-        for agent in agenten
-    )
-    print(f"Fertig. Insgesamt {gesamt} neue Vorschläge gespeichert.")
+    gesamt = 0
+    fehlgeschlagen = []
+    for agent in agenten:
+        try:
+            gesamt += fuehre_recherche_fuer_agenten_aus(
+                supabase, chat_model, agent, zusatz_anweisung, lauf_id=lauf_id
+            )
+        except Exception as e:
+            fehlgeschlagen.append(agent["name"])
+            print(
+                f'WARNUNG: Recherche-Agent "{agent["name"]}" fehlgeschlagen '
+                f'({type(e).__name__}: {e}) - bereits gespeicherte Vorschläge anderer '
+                "Agenten bleiben erhalten, weiter mit dem nächsten Agenten.\n"
+            )
+
+    zusammenfassung = f"Fertig. Insgesamt {gesamt} neue Vorschläge gespeichert."
+    if fehlgeschlagen:
+        zusammenfassung += f" ({len(fehlgeschlagen)} Agent(en) fehlgeschlagen: {', '.join(fehlgeschlagen)})"
+    print(zusammenfassung)
 
 
 def fuehre_einzelnen_agenten_aus(

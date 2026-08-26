@@ -1,5 +1,9 @@
 name: Morgenlauf
 
+# Takt 2 der Pipeline (zeitkritischer Morgenlauf) - siehe README Abschnitt
+# 2/7. Setzt voraus, dass Takt 1 (sammellauf.py / sammellauf.yml) bereits
+# gelaufen ist und offene Themen hinterlassen hat.
+#
 # Aktuell NUR manuell ausloesbar (Button "Run workflow" im Actions-Tab).
 # Es gibt bewusst noch KEINEN automatischen Zeitplan - siehe den
 # auskommentierten "schedule"-Block unten sowie README Abschnitt 10
@@ -7,13 +11,29 @@ name: Morgenlauf
 "on":
   workflow_dispatch: {}
 
-  # Beispiel-Zeitplan fuer "jeden Wochentag um 6:30 Uhr" (deutsche Zeit).
-  # GitHub-Actions-Cron laeuft immer in UTC: 4:30 UTC = 6:30 Uhr MESZ
-  # (Sommerzeit, UTC+2) bzw. 5:30 Uhr MEZ (Winterzeit, UTC+1) - Details
-  # dazu in README Abschnitt 10. Zum Aktivieren einfach die beiden
-  # "#"-Zeilen unten entfernen und committen.
+  # Beispiel-Zeitplan: Start 07:45 Uhr lokaler Zeit (Sommerzeit/MESZ,
+  # UTC+2) = 05:45 UTC, jeden Wochentag ("1-5" = Montag-Freitag). Laesst
+  # 15 Minuten Puffer bis zu einer 8-Uhr-Deadline.
+  #
+  # Basiert auf einem ECHTEN, GEMESSENEN Lauf des reduzierten
+  # morgenlauf.py (nach der Takt-1/Takt-2-Trennung, nur noch
+  # Manuskript/Faktencheck/Audio/Rhetorik, 4 statt 9 Schritte):
+  # Gesamtlaufzeit 133s (2:13 Min.), davon allein 118,8s (89%) fuer den
+  # Audio-Schritt (Deepgram-TTS + Storage-Upload) bei einem 4485 Zeichen
+  # langen Manuskript. Das lag am UNTEREN Ende der Zielspanne (1400-1600
+  # Woerter / ~8500-10000 Zeichen lt. Prompt); konservativ auf den
+  # doppelten Audio-Aufwand hochgerechnet (~240s) plus einen moeglichen
+  # Rhetorik-Pruefungs-Durchlauf (nur jeder 4. Lauf aktiv, +~90s) ergibt
+  # einen Worst-Case von ca. 6 Minuten - der 15-Minuten-Puffer liegt
+  # damit beim gut 2-fachen dieses Worst-Case.
+  #
+  # ACHTUNG: Dieser Wert ist in UTC. Bei Wechsel auf Winterzeit (MEZ, ab
+  # Ende Oktober) muss der Wert um 1 Stunde nach vorne verschoben werden
+  # (05:45 -> 06:45 UTC), sonst verschiebt sich der reale Lauf-Zeitpunkt
+  # um eine Stunde. Details dazu in README Abschnitt 10. Zum Aktivieren
+  # einfach die beiden "#"-Zeilen unten entfernen und committen.
   # schedule:
-  #   - cron: "30 4 * * 1-5"
+  #   - cron: "45 5 * * 1-5"
 
 jobs:
   morgenlauf:
@@ -40,8 +60,6 @@ jobs:
           GEMINI_MODEL_NAME: ${{ secrets.GEMINI_MODEL_NAME }}
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
         run: |
           set -o pipefail
           python morgenlauf.py | tee lauf.log

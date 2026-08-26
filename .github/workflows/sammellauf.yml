@@ -1,0 +1,65 @@
+name: Sammellauf
+
+# Takt 1 der Pipeline (Sammeln & Aufbereiten) - siehe README Abschnitt 2/7.
+# Aktuell NUR manuell ausloesbar (Button "Run workflow" im Actions-Tab).
+# Es gibt bewusst noch KEINEN automatischen Zeitplan fuer diesen Workflow.
+"on":
+  workflow_dispatch: {}
+
+jobs:
+  sammellauf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Abhaengigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: sammellauf.py ausfuehren
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL_NAME: ${{ secrets.GEMINI_MODEL_NAME }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+        run: |
+          set -o pipefail
+          python sammellauf.py | tee lauf.log
+
+      - name: Fehlschlag in Job-Zusammenfassung markieren
+        if: failure()
+        run: |
+          {
+            echo "> [!CAUTION]"
+            echo "> **Sammellauf fehlgeschlagen**"
+            echo ">"
+            echo "> Lauf [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) ist mit einem Fehler abgebrochen. Volles Log im Artefakt \`sammellauf-${{ github.run_id }}\` (lauf.log)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -f lauf.log ]; then
+            {
+              echo ""
+              echo "**Letzte Zeilen von lauf.log:**"
+              echo '```'
+              tail -n 30 lauf.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Lauf-Log als Artefakt sichern
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sammellauf-${{ github.run_id }}
+          path: lauf.log
+          if-no-files-found: ignore
+          retention-days: 14

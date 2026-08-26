@@ -8,40 +8,48 @@ Dieses System erzeugt automatisiert einen deutschsprachigen KI-News-Podcast für
 
 ```mermaid
 flowchart TD
-    RSS["RSS-Feeds<br/>(THE DECODER, T3N, HEISE,<br/>OPENAI, GOLEM, NETZPOLITIK,<br/>GRÜNDERSZENE, HANDELSBLATT)"] -->|rss_einlesen.py| ROH[("rohnachrichten")]
+    subgraph TAKT1["Takt 1: sammellauf.py (Sammeln &amp; Aufbereiten)"]
+        RSS["RSS-Feeds<br/>(THE DECODER, T3N, HEISE,<br/>OPENAI, GOLEM, NETZPOLITIK,<br/>GRÜNDERSZENE, HANDELSBLATT)"] -->|rss_einlesen.py| ROH[("rohnachrichten")]
 
-    ROH --> RA1["Recherche-Agent<br/>Produkte & Tools"]
-    ROH --> RA2["Recherche-Agent<br/>Regulierung & Recht"]
-    ROH --> RA3["Recherche-Agent<br/>Wirtschaft & Unternehmen"]
+        ROH --> RA1["Recherche-Agent<br/>Produkte & Tools"]
+        ROH --> RA2["Recherche-Agent<br/>Regulierung & Recht"]
+        ROH --> RA3["Recherche-Agent<br/>Wirtschaft & Unternehmen"]
 
-    RA1 -->|recherche_und_redaktion.py recherche| VOR[("agent_vorschlaege")]
-    RA2 --> VOR
-    RA3 --> VOR
+        RA1 -->|recherche_und_redaktion.py recherche| VOR[("agent_vorschlaege")]
+        RA2 --> VOR
+        RA3 --> VOR
 
-    VOR --> RED["Redaktions-Agent<br/>Redaktion KMU"]
-    RED -->|recherche_und_redaktion.py redaktion| ENT[("redaktion_entscheidungen")]
+        VOR --> RED["Redaktions-Agent<br/>Redaktion KMU"]
+        RED -->|recherche_und_redaktion.py redaktion| ENT[("redaktion_entscheidungen")]
 
-    ENT -->|"verarbeite_akzeptierte_entscheidungen()<br/>Embedding + Ähnlichkeitssuche"| THE[("themen<br/>+ themen_updates")]
-    THE -->|"nur bei NEUEM Thema<br/>(spart Kosten)"| ZQ["Zweite-Quelle-Check<br/>Tavily/Exa-Suche + Gemini"]
-    ZQ -.->|"zweite_quelle_bestaetigt/-url/<br/>-einschaetzung"| THE
+        ENT -->|"verarbeite_akzeptierte_entscheidungen()<br/>Embedding + Ähnlichkeitssuche"| THE[("themen<br/>+ themen_updates")]
+        THE -->|"nur bei NEUEM Thema<br/>(spart Kosten)"| ZQ["Zweite-Quelle-Check<br/>Tavily/Exa-Suche + Gemini"]
+        ZQ -.->|"zweite_quelle_bestaetigt/-url/<br/>-einschaetzung"| THE
+    end
 
-    THE -->|generiere_episode.py| MOD["Moderator-Agent<br/>Podcast-Moderator"]
-    MOD -->|"wählt 5-6 Themen,<br/>schreibt Manuskript"| EP[("episoden<br/>manuskripttext")]
-    EP -.->|"Original-Quellen der<br/>verwendeten Themen"| EQ[("episoden_quellen")]
+    subgraph TAKT2["Takt 2: morgenlauf.py (zeitkritischer Morgenlauf)"]
+        THE -->|generiere_episode.py| MOD["Moderator-Agent<br/>Podcast-Moderator"]
+        MOD -->|"wählt 5-6 Themen,<br/>schreibt Manuskript"| EP[("episoden<br/>manuskripttext")]
+        EP -.->|"Original-Quellen der<br/>verwendeten Themen"| EQ[("episoden_quellen")]
 
-    EP -->|"pruefe_manuskript()<br/>gegen Original-Quellen"| FC{"Faktencheck<br/>Widerspruch?"}
-    FC -->|nein: freigegeben| TTS["Text-to-Speech<br/>Deepgram / ElevenLabs"]
-    FC -->|ja: pruefung_fehlgeschlagen| STOP["Audio übersprungen,<br/>manuelle Prüfung nötig"]
-    TTS --> MP3["output/episode_&lt;id&gt;.mp3"]
-    MP3 -.->|audio_pfad| EP
-    MP3 -->|"Supabase Storage-Upload<br/>(oeffentlicher Bucket)"| AUDIOURL["oeffentliche URL"]
-    AUDIOURL -.->|audio_url| EP
+        EP -->|"pruefe_manuskript()<br/>gegen Original-Quellen"| FC{"Faktencheck<br/>Widerspruch?"}
+        FC -->|nein: freigegeben| TTS["Text-to-Speech<br/>Deepgram / ElevenLabs"]
+        FC -->|ja: pruefung_fehlgeschlagen| STOP["Audio übersprungen,<br/>manuelle Prüfung nötig"]
+        TTS --> MP3["output/episode_&lt;id&gt;.mp3"]
+        MP3 -.->|audio_pfad| EP
+        MP3 -->|"Supabase Storage-Upload<br/>(oeffentlicher Bucket)"| AUDIOURL["oeffentliche URL"]
+        AUDIOURL -.->|audio_url| EP
 
-    EP -->|"alle 4 Episoden"| RHET["Rhetorik-Agent<br/>Rhetorik-Check"]
-    RHET --> RB[("rhetorik_bewertungen")]
+        EP -->|"alle 4 Episoden"| RHET["Rhetorik-Agent<br/>Rhetorik-Check"]
+        RHET --> RB[("rhetorik_bewertungen")]
+    end
 ```
 
-**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat) - entsteht dabei ein neues Thema, sucht zusätzlich eine Zweite-Quelle-Verifikation (Tavily/Exa + Gemini) nach unabhängiger Bestätigung des Kernfakts. Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt das Manuskript; die dabei verwendeten Original-Quellen werden dauerhaft in `episoden_quellen` festgehalten. Bevor daraus Audio erzeugt wird, prüft ein Faktencheck-Schritt das Manuskript gegen die Original-Quellen; nur bei Freigabe wird die MP3 erzeugt (als allererste Zeile im Manuskript steht dabei immer ein fester KI-Kennzeichnungshinweis, siehe Abschnitt 6). Die fertige MP3 wird lokal gespeichert UND zusätzlich in einen öffentlichen Supabase-Storage-Bucket hochgeladen, damit eine stabile URL unabhängig von GitHub-Actions-Artefakten oder dem lokalen Rechner existiert. Unabhängig davon prüft alle 4 Episoden ein Rhetorik-Agent die zuletzt erschienenen Manuskripte auf Wiederholungen und die Balance zwischen Storytelling und Nachrichtenkern - rein informativ, ohne automatische Änderung.
+**Zwei getrennte Takte, architektonisch als eigene Skripte/Workflows getrennt** (`sammellauf.py`/`sammellauf.yml` und `morgenlauf.py`/`morgenlauf.yml`, gemeinsame Infrastruktur in `pipeline_utils.py`), damit das zeitunkritische Sammeln unabhängig vom zeitkritischen Morgenlauf getaktet und überwacht werden kann:
+
+**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat) - entsteht dabei ein neues Thema, sucht zusätzlich eine Zweite-Quelle-Verifikation (Tavily/Exa + Gemini) nach unabhängiger Bestätigung des Kernfakts. **Damit endet Takt 1** - `sammellauf.py` schreibt nie in `episoden`.
+
+**Takt 2** setzt auf den vorbereiteten offenen Themen auf: Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt das Manuskript; die dabei verwendeten Original-Quellen werden dauerhaft in `episoden_quellen` festgehalten. Bevor daraus Audio erzeugt wird, prüft ein Faktencheck-Schritt das Manuskript gegen die Original-Quellen; nur bei Freigabe wird die MP3 erzeugt (als allererste Zeile im Manuskript steht dabei immer ein fester KI-Kennzeichnungshinweis, siehe Abschnitt 6). Die fertige MP3 wird lokal gespeichert UND zusätzlich in einen öffentlichen Supabase-Storage-Bucket hochgeladen, damit eine stabile URL unabhängig von GitHub-Actions-Artefakten oder dem lokalen Rechner existiert. Unabhängig davon prüft alle 4 Episoden ein Rhetorik-Agent die zuletzt erschienenen Manuskripte auf Wiederholungen und die Balance zwischen Storytelling und Nachrichtenkern - rein informativ, ohne automatische Änderung.
 
 ## 3. Die KI-Agenten
 
@@ -88,7 +96,7 @@ Aktuell ein Agent: **Redaktion KMU** (fokus: Perspektive eines Geschäftsführer
 
 **Ändern:** Table Editor → `agenten_konfiguration` → Zeile mit `name = 'Redaktion KMU'` → `fokus_beschreibung` bearbeiten. Beispiel: Um strenger zu selektieren, im Fokus-Text ergänzen "Lehne alles ab, was nicht in den nächsten 4 Wochen praktisch relevant ist."
 
-**Update-Check für bereits gesendete Themen:** Als eigener Pipeline-Schritt (`pruefe_update_reaktivierung()` in `recherche_und_redaktion.py`, Schritt 5/8 in `morgenlauf.py` - siehe Abschnitt 7) prüft derselbe Redaktions-Agent alle neuen Einträge in `themen_updates`, deren Thema bereits den Status "gesendet" hat. Für jedes Update entscheidet Gemini mit Begründung, ob es wichtig genug ist, das Thema erneut aufzugreifen (z.B. "Fall wurde final entschieden" ja, "Verzögerung um zwei Tage" eher nicht). Bei Ja wird der Themen-Status zurück auf "in Verfolgung" gesetzt; die Entscheidung landet in jedem Fall (auch bei Nein) in `redaktion_update_entscheidungen`. Der Moderator merkt bei so wiederaufgenommenen Themen im Manuskript kurz an, dass es sich um eine Fortsetzung handelt (siehe Abschnitt 6).
+**Update-Check für bereits gesendete Themen:** Als eigener Pipeline-Schritt (`pruefe_update_reaktivierung()` in `recherche_und_redaktion.py`, Schritt 5/5 in `sammellauf.py` - siehe Abschnitt 7) prüft derselbe Redaktions-Agent alle neuen Einträge in `themen_updates`, deren Thema bereits den Status "gesendet" hat. Für jedes Update entscheidet Gemini mit Begründung, ob es wichtig genug ist, das Thema erneut aufzugreifen (z.B. "Fall wurde final entschieden" ja, "Verzögerung um zwei Tage" eher nicht). Bei Ja wird der Themen-Status zurück auf "in Verfolgung" gesetzt; die Entscheidung landet in jedem Fall (auch bei Nein) in `redaktion_update_entscheidungen`. Der Moderator merkt bei so wiederaufgenommenen Themen im Manuskript kurz an, dass es sich um eine Fortsetzung handelt (siehe Abschnitt 6).
 
 **Einzeln testen:**
 
@@ -157,7 +165,7 @@ Oder über die Kommandozeile: `python rhetorik_check.py`. Läuft nur tatsächlic
 
 ### Der Rhetorik-Agent und automatische Prompt-Anpassung
 
-**1. Was er macht:** Prüft alle 4 Episoden die letzten 4 Manuskripte auf rhetorische Qualität (Wiederholungsmuster über mehrere Folgen, Balance zwischen Storytelling und Nachrichtenkern) - unabhängig vom Faktencheck, der nur Fakten prüft. Läuft automatisch als letzter Schritt (9/9) in `morgenlauf.py`, das Ergebnis erscheint in der Konsolen-Zusammenfassung.
+**1. Was er macht:** Prüft alle 4 Episoden die letzten 4 Manuskripte auf rhetorische Qualität (Wiederholungsmuster über mehrere Folgen, Balance zwischen Storytelling und Nachrichtenkern) - unabhängig vom Faktencheck, der nur Fakten prüft. Läuft automatisch als letzter Schritt (4/4) in `morgenlauf.py` (Takt 2, siehe Abschnitt 2), das Ergebnis erscheint in der Konsolen-Zusammenfassung.
 
 **2. Wichtig - er ändert NICHTS automatisch:** Die Prüfung selbst speichert nur eine Bewertung mit konkreten Kritikpunkten in `rhetorik_bewertungen`. Die eigentliche Prompt-Anpassung ist ein **separater, manuell auszulösender** Schritt - kein automatischer Cron-Effekt.
 
@@ -223,7 +231,7 @@ e) Stellt sich eine bereits aktivierte Version später doch als Fehlgriff heraus
    - Kein Treffer: neues Thema in `themen` mit Status `neu` - **nur in diesem Fall** (nicht bei Update/Duplikat, um Kosten zu sparen) läuft zusätzlich eine Zweite-Quelle-Verifikation (`pruefe_zweite_quelle` in `recherche_und_redaktion.py`, Ausschreibungs-Kriterium 5): gezielte Suche per Tavily (Fallback bei Fehler/leerem Ergebnis: Exa) mit dem Themen-Titel als Anfrage, die Top-Treffer gehen zusammen mit dem Original-Rohnachrichtentext an Gemini mit der Frage, ob eine unabhängige Quelle den Kernfakt bestätigt. Ergebnis landet direkt in `themen.zweite_quelle_bestaetigt`/`-url`/`-einschaetzung` - **rein dokumentarisch**, ein "nicht bestätigt" verhindert nicht, dass das Thema trotzdem in eine Folge aufgenommen wird. Liefern weder Tavily noch Exa Treffer, bleiben die Felder `NULL` (nur Konsolen-Hinweis, kein Fehler, blockiert die Themen-Anlage nie).
 5. **Finale Manuskript-Auswahl:** `generiere_episode.py` holt alle Themen mit Status `neu` oder `in Verfolgung` (unabhängig davon, wie sie entstanden sind) und lässt den Moderator-Agenten daraus die 5-6 wichtigsten für die aktuelle Folge auswählen (Abschnitt "THEMENAUSWAHL" im Prompt, siehe Abschnitt 6). Nur die vom Moderator tatsächlich verwendeten Themen werden danach auf Status `gesendet` gesetzt; die übrigen bleiben offen für die nächste Folge. Für jedes tatsächlich verwendete Thema werden zusätzlich die verknüpften Original-Rohnachrichten dauerhaft in `episoden_quellen` gespeichert (`speichere_episoden_quellen` in `erstelle_episode`) - Themen ohne nachvollziehbare Verknüpfung (z.B. alte Seed-/Testdaten) bekommen dabei keine Zeile, nur eine Konsolen-Meldung.
 6. **Update-Check nach dem Senden:** Kommt zu einem bereits gesendeten Thema (`themen.status = 'gesendet'`) später ein neues Update in `themen_updates` hinzu, prüft der Redaktions-Agent über `pruefe_update_reaktivierung()` bei jedem Lauf, ob das Update wichtig genug ist, um das Thema zurück auf `in Verfolgung` zu setzen - und damit erneut für die Manuskript-Auswahl (Schritt 5) in Frage kommt (siehe Abschnitt 3).
-7. **Faktencheck vor der Veröffentlichung:** `pruefe_manuskript()` in `generiere_episode.py` sammelt für jedes tatsächlich verwendete Thema die verknüpften Original-Rohnachrichten (über `redaktion_entscheidungen` -> `agent_vorschlaege` -> `rohnachrichten`) und lässt Gemini jede konkrete Zahl, jeden Eigennamen und jede Datumsangabe im Manuskript dagegen prüfen. Ergebnis (`bestaetigt`/`widerspruch`/`nicht_belegt` je Behauptung) landet in `episoden.faktencheck_ergebnis`, der Episoden-`status` wird auf `freigegeben` oder `pruefung_fehlgeschlagen` gesetzt. Bei mindestens einem `widerspruch` überspringt `morgenlauf.py` die Audio-Erzeugung (Schritt 7) - die Episode bleibt unvertont, bis sie manuell geprüft wurde. Ein `nicht_belegt` blockiert nichts automatisch (kann ein bewusst erfundenes Storytelling-Beispiel sein).
+7. **Faktencheck vor der Veröffentlichung:** `pruefe_manuskript()` in `generiere_episode.py` sammelt für jedes tatsächlich verwendete Thema die verknüpften Original-Rohnachrichten (über `redaktion_entscheidungen` -> `agent_vorschlaege` -> `rohnachrichten`) und lässt Gemini jede konkrete Zahl, jeden Eigennamen und jede Datumsangabe im Manuskript dagegen prüfen. Ergebnis (`bestaetigt`/`widerspruch`/`nicht_belegt` je Behauptung) landet in `episoden.faktencheck_ergebnis`, der Episoden-`status` wird auf `freigegeben` oder `pruefung_fehlgeschlagen` gesetzt. Bei mindestens einem `widerspruch` überspringt `morgenlauf.py` die Audio-Erzeugung (Schritt 3/4) - die Episode bleibt unvertont, bis sie manuell geprüft wurde. Ein `nicht_belegt` blockiert nichts automatisch (kann ein bewusst erfundenes Storytelling-Beispiel sein).
 
 ## 6. Wie man den Manuskript-Stil ändert
 
@@ -276,12 +284,33 @@ OPENAI_API_KEY=
 
 ### Kompletter Durchlauf (Reihenfolge)
 
+Zwei unabhängige Skripte, ein Takt je Zweck (siehe Abschnitt 2):
+
+**Takt 1 - Sammeln & Aufbereiten**, als Ganzes:
+
+```
+python sammellauf.py
+```
+
+...oder Schritt für Schritt (identisch zu dem, was `sammellauf.py` intern aufruft):
+
 ```
 python rss_einlesen.py
 python recherche_und_redaktion.py recherche
 python recherche_und_redaktion.py redaktion
 python recherche_und_redaktion.py verarbeite
 python recherche_und_redaktion.py update_reaktivierung
+```
+
+**Takt 2 - zeitkritischer Morgenlauf**, als Ganzes (setzt voraus, dass Takt 1 bereits offene Themen hinterlassen hat):
+
+```
+python morgenlauf.py
+```
+
+...oder Schritt für Schritt, beginnend mit dem Manuskript:
+
+```
 python generiere_episode.py
 ```
 
@@ -331,7 +360,7 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 - **Deepgram hat ein Limit von 2000 Zeichen pro Anfrage.** Längere Manuskripte werden automatisch an Satzgrenzen in Chunks aufgeteilt (`_teile_text`) und die Audio-Teile zusammengefügt.
 - **ElevenLabs-Kontingent ist begrenzt** - für finale/echte Aufnahmen aufheben, für Tests Deepgram (Standard-Anbieter) nutzen.
 - **`google.generativeai` (Python-Paket) ist deprecated** (Gemini-Team empfiehlt Umstieg auf `google.genai`) - erzeugt aktuell bei jedem Lauf eine `FutureWarning`, funktioniert aber noch.
-- **Noch kein automatischer Zeitplan, aber ein manueller GitHub-Actions-Trigger** - `morgenlauf.py` bündelt den kompletten Ablauf von RSS bis Rhetorik-Prüfung (9 Schritte, siehe Docstring der Datei) in einem Skript und lässt sich über den Workflow `.github/workflows/morgenlauf.yml` per Knopfdruck im GitHub-Actions-Tab starten, zusätzlich weiterhin lokal per `python morgenlauf.py` (siehe Abschnitt 10). Ein automatischer Cron-Zeitplan ist im Workflow vorbereitet, aber bewusst auskommentiert - es gibt also aktuell keinen zeitgesteuerten Trigger, nur den manuellen.
+- **Noch kein automatischer Zeitplan, aber zwei manuelle GitHub-Actions-Trigger** - die Pipeline ist in zwei Takte getrennt (siehe Abschnitt 2): `sammellauf.py` (RSS bis Themenpflege, 5 Schritte) und `morgenlauf.py` (Manuskript bis Rhetorik-Prüfung, 4 Schritte), jeweils mit eigenem Workflow (`.github/workflows/sammellauf.yml` bzw. `morgenlauf.yml`), der sich per Knopfdruck im GitHub-Actions-Tab starten lässt, zusätzlich weiterhin lokal per `python sammellauf.py`/`python morgenlauf.py` (siehe Abschnitt 10). Ein automatischer Cron-Zeitplan ist nur im `morgenlauf.yml`-Workflow vorbereitet, aber bewusst auskommentiert - es gibt also aktuell keinen zeitgesteuerten Trigger für keinen der beiden Workflows, nur den manuellen. `morgenlauf.py` setzt voraus, dass `sammellauf.py` vorher gelaufen ist und offene Themen hinterlassen hat - läuft es ohne, entsteht einfach keine Episode (kein Fehler, siehe Abschnitt 11).
 - **Themen-Markierung ist konservativ:** Liefert die Moderator-KI keine gültige `VERWENDETE_THEMEN_IDS`-Zeile, wird sicherheitshalber **kein** Thema als "gesendet" markiert (Warnung in der Konsole) - besser als fälschlich Themen zu verlieren, kann aber dazu führen, dass Themen manuell nachgepflegt werden müssen.
 - **`episoden.kosten` wird befüllt, aber nur bei einem kompletten `morgenlauf.py`-Durchlauf** - `kosten_tracking.py` loggt jeden Gemini-/Deepgram-/ElevenLabs-Aufruf in `api_kosten`; die Summe pro Episode wird aber erst am Ende von `morgenlauf.py` gebildet und in `episoden.kosten` geschrieben. Wird `erstelle_episode()` standalone aufgerufen (siehe Abschnitt 3), bleibt `episoden.kosten` leer, weil dieser Aggregationsschritt dort nicht mitläuft. Die Werte sind zudem Schätzungen auf Basis der manuell gepflegten Preistabelle in `kosten_tracking.py`, nicht die tatsächlich abgerechneten Anbieterkosten.
 - **`themen.quelle` wird aktuell nirgends befüllt.**
@@ -372,40 +401,53 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 
 ## 10. Automatisierung (GitHub Actions)
 
-**Aktueller Stand:** Der komplette Durchlauf (`morgenlauf.py`) lässt sich über GitHub Actions manuell anstoßen, ohne dass jemand lokal `python morgenlauf.py` ausführen muss. Der Workflow `.github/workflows/morgenlauf.yml` reagiert aktuell **ausschließlich auf einen manuellen Klick** (`workflow_dispatch`) - es gibt bewusst noch **keinen** automatischen Zeitplan.
+**Aktueller Stand:** Beide Takte (siehe Abschnitt 2) lassen sich über GitHub Actions manuell anstoßen, ohne dass jemand lokal etwas ausführen muss - je ein eigener Workflow pro Skript: `.github/workflows/sammellauf.yml` (Takt 1) und `.github/workflows/morgenlauf.yml` (Takt 2). Beide reagieren aktuell **ausschließlich auf einen manuellen Klick** (`workflow_dispatch`) - es gibt bewusst noch **keinen** automatischen Zeitplan für keinen der beiden.
 
 **Manuell auslösen:**
-1. GitHub-Repo → Tab "Actions" → Workflow "Morgenlauf" in der linken Liste auswählen.
+1. GitHub-Repo → Tab "Actions" → Workflow "Sammellauf" oder "Morgenlauf" in der linken Liste auswählen (für eine vollständige Episode: erst Sammellauf, dann - nach dessen Abschluss - Morgenlauf).
 2. Button "Run workflow" → nochmal "Run workflow" bestätigen.
-3. Nach Abschluss (egal ob erfolgreich oder mit Fehlern) im Lauf unter "Artifacts" das Paket `morgenlauf-<run-id>` herunterladen - enthält `lauf.log` (komplette Konsolen-Ausgabe wie lokal) sowie alle in `output/` erzeugten MP3-Dateien. GitHub Actions hat keinen dauerhaften Dateispeicher, und das Artefakt selbst läuft nach 14 Tagen ab (`retention-days: 14`) - für den dauerhaften Zugriff auf eine Episode zählt stattdessen `episoden.audio_url` (öffentliche Supabase-Storage-URL, siehe Abschnitt 4), die unabhängig vom Workflow-Lauf bestehen bleibt.
+3. Nach Abschluss (egal ob erfolgreich oder mit Fehlern) im Lauf unter "Artifacts" das Paket `sammellauf-<run-id>` bzw. `morgenlauf-<run-id>` herunterladen - enthält `lauf.log` (komplette Konsolen-Ausgabe wie lokal), beim Morgenlauf zusätzlich alle in `output/` erzeugten MP3-Dateien. GitHub Actions hat keinen dauerhaften Dateispeicher, und das Artefakt selbst läuft nach 14 Tagen ab (`retention-days: 14`) - für den dauerhaften Zugriff auf eine Episode zählt stattdessen `episoden.audio_url` (öffentliche Supabase-Storage-URL, siehe Abschnitt 4), die unabhängig vom Workflow-Lauf bestehen bleibt.
 
-**Fehlschlag sofort erkennbar, ohne Logs aufzuklappen:** Schlägt irgendein Schritt fehl, schreibt der zusätzliche Schritt "Fehlschlag in Job-Zusammenfassung markieren" (`if: failure()`) einen auffälligen `[!CAUTION]`-Alert samt Link zum Lauf und den letzten 30 Zeilen von `lauf.log` direkt in die GitHub Step Summary - sichtbar schon in der Actions-Übersicht, ohne das Artefakt herunterladen oder auf eine E-Mail-Benachrichtigung warten zu müssen. Bei einem erfolgreichen Lauf erscheint dieser Schritt gar nicht erst (übersprungen).
+**Fehlschlag sofort erkennbar, ohne Logs aufzuklappen:** In beiden Workflows identisch: Schlägt irgendein Pipeline-Schritt fehl, führen die Skripte die verbleibenden Schritte und das Laufprotokoll noch zu Ende, beenden sich anschließend aber mit Exitcode 1. Durch `set -o pipefail` wird dadurch auch der Workflow als fehlgeschlagen markiert. Der zusätzliche Schritt "Fehlschlag in Job-Zusammenfassung markieren" (`if: failure()`) schreibt dann einen auffälligen `[!CAUTION]`-Alert samt Link zum Lauf und den letzten 30 Zeilen von `lauf.log` direkt in die GitHub Step Summary - sichtbar schon in der Actions-Übersicht, ohne das Artefakt herunterladen oder auf eine E-Mail-Benachrichtigung warten zu müssen. Bei einem erfolgreichen Lauf erscheint dieser Schritt gar nicht erst (übersprungen).
 
-**Voraussetzung: GitHub Secrets sind gesetzt.** Repo → Settings → Secrets and variables → Actions → "New repository secret" für jede der Variablen aus Abschnitt 7, die `morgenlauf.py` tatsächlich braucht (`SUPABASE_URL`, `SUPABASE_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`) - mit denselben Werten wie in der lokalen `.env`. Ohne `TAVILY_API_KEY`/`EXA_API_KEY` schlägt der Lauf nicht ab, die Zweite-Quelle-Verifikation (Abschnitt 5) wird für neue Themen nur übersprungen (Konsolen-Hinweis). Ohne die übrigen Secrets schlägt der Lauf beim ersten API-Aufruf fehl. (`OPENAI_API_KEY` wird aktuell von keinem Pipeline-Schritt gelesen - nur von `test_apis.py`, das nicht Teil des Workflows ist - und ist deshalb nicht im Workflow verdrahtet.)
+**Voraussetzung: GitHub Secrets sind gesetzt.** Repo → Settings → Secrets and variables → Actions → "New repository secret" für jede der Variablen aus Abschnitt 7. Die beiden Workflows brauchen dabei **unterschiedliche** Teilmengen:
 
-**Später: automatischen Zeitplan aktivieren.** In `.github/workflows/morgenlauf.yml` steht im `on:`-Block ein auskommentierter `schedule`-Vorschlag für "jeden Wochentag um 5:30 Uhr" (deutsche Zeit) - lässt gut zwei Stunden Puffer bis zu einer 8-Uhr-Deadline, gemessen an der bisherigen Pipeline-Laufzeit von bis zu ~8 Minuten:
+| Secret | `sammellauf.yml` | `morgenlauf.yml` |
+|---|---|---|
+| `SUPABASE_URL` / `SUPABASE_KEY` | ✓ | ✓ |
+| `GEMINI_API_KEY` / `GEMINI_MODEL_NAME` | ✓ | ✓ |
+| `TAVILY_API_KEY` / `EXA_API_KEY` | ✓ (Zweite-Quelle-Verifikation, Abschnitt 5) | - |
+| `DEEPGRAM_API_KEY` / `ELEVENLABS_API_KEY` | - | ✓ |
+
+Mit denselben Werten wie in der lokalen `.env` eintragen. Ohne `TAVILY_API_KEY`/`EXA_API_KEY` schlägt `sammellauf.py` nicht ab, die Zweite-Quelle-Verifikation wird für neue Themen nur übersprungen (Konsolen-Hinweis). Ohne die übrigen Secrets schlägt der jeweilige Lauf beim ersten API-Aufruf fehl. (`OPENAI_API_KEY` wird aktuell von keinem Pipeline-Schritt gelesen - nur von `test_apis.py`, das nicht Teil eines Workflows ist - und ist deshalb in keinem der beiden verdrahtet.)
+
+**Später: automatischen Zeitplan aktivieren.** Nur in `.github/workflows/morgenlauf.yml` steht im `on:`-Block ein auskommentierter `schedule`-Vorschlag (für `sammellauf.yml` gibt es aktuell noch keinen Vorschlag - Takt 1 ist nicht zeitkritisch, ein Zeitplan dafür ist bewusst noch offen) - "jeden Wochentag um 7:45 Uhr" (deutsche Zeit):
 
 ```yaml
 # schedule:
-#   - cron: "30 3 * * 1-5"
+#   - cron: "45 5 * * 1-5"
 ```
 
-GitHub-Actions-Cron läuft immer in UTC: `30 3` = 3:30 UTC, das entspricht 5:30 Uhr MESZ (Sommerzeit, UTC+2). **Achtung beim Zeitwechsel:** Bei Wechsel auf Winterzeit (MEZ, UTC+1, ab Ende Oktober) muss der Wert um 1 Stunde nach vorne verschoben werden (`30 3` → `30 4`, also 3:30 → 4:30 UTC), sonst verschiebt sich der reale Lauf-Zeitpunkt um eine Stunde - das ist kein automatischer Vorgang, GitHub-Actions-Cron kennt keine Zeitzonen. `1-5` steht für Montag-Freitag. Zum Aktivieren einfach die beiden `#`-Zeilen entfernen und committen - danach läuft `morgenlauf.py` automatisch nach diesem Zeitplan, zusätzlich weiterhin manuell auslösbar.
+**Basiert auf einem echten, gemessenen Lauf** des reduzierten `morgenlauf.py` (nicht nur einer Schätzung): Gesamtlaufzeit 133s (2:13 Min.), davon allein 118,8s (89%) für den Audio-Schritt (Deepgram-TTS + Storage-Upload) bei einem 4485 Zeichen langen Testmanuskript - das lag am unteren Ende der Zielspanne (1400-1600 Wörter / ~8500-10000 Zeichen lt. Prompt). Konservativ auf den doppelten Audio-Aufwand (~240s) plus einen möglichen Rhetorik-Prüfungs-Durchlauf (nur jeder 4. Lauf aktiv, +~90s) hochgerechnet ergibt das einen Worst-Case von ca. 6 Minuten - der 15-Minuten-Puffer bis 8:00 liegt damit beim gut 2-fachen dieses Worst-Case.
+
+GitHub-Actions-Cron läuft immer in UTC: `45 5` = 5:45 UTC, das entspricht 7:45 Uhr MESZ (Sommerzeit, UTC+2). **Achtung beim Zeitwechsel:** Bei Wechsel auf Winterzeit (MEZ, UTC+1, ab Ende Oktober) muss der Wert um 1 Stunde nach vorne verschoben werden (`45 5` → `45 6`, also 5:45 → 6:45 UTC), sonst verschiebt sich der reale Lauf-Zeitpunkt um eine Stunde - das ist kein automatischer Vorgang, GitHub-Actions-Cron kennt keine Zeitzonen. `1-5` steht für Montag-Freitag. Zum Aktivieren einfach die beiden `#`-Zeilen entfernen und committen - danach läuft `morgenlauf.py` automatisch nach diesem Zeitplan, zusätzlich weiterhin manuell auslösbar. **Wichtig:** `sammellauf.py` muss bis dahin bereits abgeschlossen sein (aktuell nur manuell sicherzustellen, da noch kein eigener Zeitplan existiert) - sonst findet `morgenlauf.py` keine offenen Themen vor (kein Fehler, siehe Abschnitt 11, aber auch keine Episode).
 
 ## 11. Fehler-Matrix
 
 Dokumentiert das **tatsächliche** Verhalten der Pipeline bei typischen Fehlerfällen - kein Soll-Zustand, sondern eine Bestandsaufnahme des aktuellen Codes.
 
+*Seit der Takt-1/Takt-2-Trennung (Abschnitt 2): "Schritt X/5" bezieht sich auf `sammellauf.py`, "Schritt X/4" auf `morgenlauf.py`.*
+
 | Szenario | Tatsächliches Verhalten | Fundstelle |
 |---|---|---|
-| Einzelne RSS-Quelle nicht erreichbar | Pro-Feed-`try/except` in `main()`: Fehler wird geloggt, Schleife läuft mit dem nächsten Feed weiter. Schritt 1/9 zeigt sich am Ende **immer** als "erfolgreich" - auch wenn alle Feeds gleichzeitig ausfallen, dann eben mit 0 neuen Einträgen. | `rss_einlesen.py`, `main()` |
-| Recherche-/Redaktions-Schritt schlägt fehl (z.B. API-Kontingent) | Try/Except pro Agent in `fuehre_recherche_agenten_aus()` - ein fehlgeschlagener Agent wird geloggt (Name + Fehler), bereits gespeicherte Vorschläge davor UND danach folgender Agenten bleiben unberührt, die Schleife läuft weiter. Der Pipeline-Schritt (2/9) zeigt sich am Ende trotzdem als "erfolgreich" (mit Hinweis, welche Agenten gescheitert sind) - außer der Fehler passiert außerhalb der Schleife (z.B. `hole_aktive_agenten()` selbst, meist ein DB-Problem). **Redaktions-Schritt (3/9) bleibt unverändert:** verarbeitet ohnehin nur einen einzigen Agenten (`hole_aktiven_redaktionsagenten()` nimmt bei mehreren aktiven nur den ersten) - kein Multi-Agent-Fall, den es hier zu schützen gäbe. | `recherche_und_redaktion.py`, `fuehre_recherche_agenten_aus()`/`fuehre_redaktion_aus()`; `morgenlauf.py`, `fuehre_schritt_aus()` |
-| Kein offenes Thema für ein Manuskript vorhanden | `erstelle_episode()` gibt `None` zurück - **kein Fehler**, Schritt 6/9 zeigt "erfolgreich" (nur mit Hinweistext "keine offenen Themen"). Schritt 7/9 (Faktencheck) und 8/9 (Audio) werden danach explizit als "übersprungen" markiert. | `generiere_episode.py`, `erstelle_episode()`; `morgenlauf.py`, `main()` |
-| Faktencheck findet einen Widerspruch | Die Prüfung selbst läuft erfolgreich durch, setzt `episoden.status` auf `pruefung_fehlgeschlagen`. Schritt 7/9 zeigt "erfolgreich" (die Prüfung *funktioniert* ja). Schritt 8/9 (Audio) wird explizit übersprungen, Episode bleibt unvertont bis zur manuellen Prüfung. *Anderer Fall, falls der Faktencheck-Schritt selbst abstürzt (z.B. Gemini-Fehler statt gefundenem Widerspruch): Schritt 7/9 wird "fehlgeschlagen", `episoden.status` bleibt beim Default `ungeprueft` (nie umgesetzt), Audio wird ebenfalls übersprungen ("Faktencheck fehlgeschlagen").* | `generiere_episode.py`, `pruefe_manuskript()`; `morgenlauf.py`, `main()` |
-| TTS-Erzeugung schlägt fehl | `_via_deepgram()`/`_via_elevenlabs()` haben **kein eigenes** Try/Except - die Exception propagiert bis `fuehre_schritt_aus()` hoch, Schritt 8/9 wird "fehlgeschlagen". Da `erzeuge_audio_fuer_episode()` den DB-Update-Aufruf dadurch nie erreicht, bleiben `episoden.audio_pfad` **und** `audio_url` unverändert (meist `NULL`) - selbst wenn lokal bereits eine unvollständige Datei geschrieben wurde. | `generiere_audio.py`, `_via_deepgram()`/`_via_elevenlabs()` |
-| Supabase Storage Upload schlägt fehl | `lade_audio_hoch()` ist explizit try/except-geschützt: nur eine Konsolen-Warnung, gibt `None` zurück. `audio_url` bleibt `NULL`, `audio_pfad` (lokaler Pfad) wird trotzdem normal gesetzt. Schritt 8/9 zeigt sich als "erfolgreich" (nur ohne öffentliche URL in der Zusammenfassung). | `generiere_audio.py`, `lade_audio_hoch()` |
-| Datenbank nicht erreichbar | Kein zentraler Kill-Switch, kein Retry irgendwo in der Pipeline - Verhalten ist uneinheitlich: In `rss_einlesen.py` landet ein DB-Fehler im selben Pro-Feed-`try/except` wie ein Netzwerkfehler → Schritt zeigt trotzdem "erfolgreich". In den meisten anderen Schritten gibt es kein eigenes Try/Except um DB-Aufrufe → Exception propagiert bis `fuehre_schritt_aus()`, Schritt "fehlgeschlagen", Pipeline läuft trotzdem weiter (meist ebenso erfolglos, da dieselbe DB betroffen ist). `starte_lauf_protokoll()`/`aktualisiere_lauf_protokoll()` sind eigens try/except-geschützt (nur Konsolen-Warnung). | verstreut über alle Module; zentral `morgenlauf.py`, `fuehre_schritt_aus()` |
-| Lauf insgesamt nicht rechtzeitig fertig | **Bekannte Lücke:** Keine Uhrzeit-/Deadline-Prüfung im Python-Code (kein einziger Treffer für "deadline"/"timeout" in der ganzen Codebase). Einziger Schutz ist `timeout-minutes: 30` auf Job-Ebene im GitHub-Actions-Workflow - bricht nach 30 Minuten hart ab, unabhängig von einer 8-Uhr-Deadline. Der Artefakt-Upload-Schritt (`if: always()`) läuft laut GitHub-Actions-Verhalten auch bei einem Timeout-Abbruch noch, liefert dann aber ggf. nur ein unvollständiges `lauf.log`. | `.github/workflows/morgenlauf.yml` (`timeout-minutes: 30`) - keine Entsprechung in `morgenlauf.py` |
+| Einzelne RSS-Quelle nicht erreichbar | Pro-Feed-`try/except` in `main()`: Fehler wird geloggt, Schleife läuft mit dem nächsten Feed weiter. Schritt 1/5 (`sammellauf.py`) zeigt sich am Ende **immer** als "erfolgreich" - auch wenn alle Feeds gleichzeitig ausfallen, dann eben mit 0 neuen Einträgen. | `rss_einlesen.py`, `main()` |
+| Recherche-/Redaktions-Schritt schlägt fehl (z.B. API-Kontingent) | Try/Except pro Agent in `fuehre_recherche_agenten_aus()` - ein fehlgeschlagener Agent wird geloggt (Name + Fehler), bereits gespeicherte Vorschläge davor UND danach folgender Agenten bleiben unberührt, die Schleife läuft weiter. Der Pipeline-Schritt (2/5) zeigt sich am Ende trotzdem als "erfolgreich" (mit Hinweis, welche Agenten gescheitert sind) - außer der Fehler passiert außerhalb der Schleife (z.B. `hole_aktive_agenten()` selbst, meist ein DB-Problem). **Redaktions-Schritt (3/5) bleibt unverändert:** verarbeitet ohnehin nur einen einzigen Agenten (`hole_aktiven_redaktionsagenten()` nimmt bei mehreren aktiven nur den ersten) - kein Multi-Agent-Fall, den es hier zu schützen gäbe. | `recherche_und_redaktion.py`, `fuehre_recherche_agenten_aus()`/`fuehre_redaktion_aus()`; `pipeline_utils.py`, `fuehre_schritt_aus()` |
+| Kein offenes Thema für ein Manuskript vorhanden | `erstelle_episode()` gibt `None` zurück - **kein Fehler**, Schritt 1/4 (`morgenlauf.py`) zeigt "erfolgreich" (nur mit Hinweistext "keine offenen Themen"). Passiert insbesondere, wenn `sammellauf.py` noch nicht (erfolgreich) gelaufen ist. Schritt 2/4 (Faktencheck) und 3/4 (Audio) werden danach explizit als "übersprungen" markiert. | `generiere_episode.py`, `erstelle_episode()`; `morgenlauf.py`, `main()` |
+| Faktencheck findet einen Widerspruch | Die Prüfung selbst läuft erfolgreich durch, setzt `episoden.status` auf `pruefung_fehlgeschlagen`. Schritt 2/4 zeigt "erfolgreich" (die Prüfung *funktioniert* ja). Schritt 3/4 (Audio) wird explizit übersprungen, Episode bleibt unvertont bis zur manuellen Prüfung. *Anderer Fall, falls der Faktencheck-Schritt selbst abstürzt (z.B. Gemini-Fehler statt gefundenem Widerspruch): Schritt 2/4 wird "fehlgeschlagen", `episoden.status` bleibt beim Default `ungeprueft` (nie umgesetzt), Audio wird ebenfalls übersprungen ("Faktencheck fehlgeschlagen").* | `generiere_episode.py`, `pruefe_manuskript()`; `morgenlauf.py`, `main()` |
+| TTS-Erzeugung schlägt fehl | `_via_deepgram()`/`_via_elevenlabs()` haben **kein eigenes** Try/Except - die Exception propagiert bis `fuehre_schritt_aus()` hoch, Schritt 3/4 wird "fehlgeschlagen". Da `erzeuge_audio_fuer_episode()` den DB-Update-Aufruf dadurch nie erreicht, bleiben `episoden.audio_pfad` **und** `audio_url` unverändert (meist `NULL`) - selbst wenn lokal bereits eine unvollständige Datei geschrieben wurde. | `generiere_audio.py`, `_via_deepgram()`/`_via_elevenlabs()` |
+| Supabase Storage Upload schlägt fehl | `lade_audio_hoch()` ist explizit try/except-geschützt: nur eine Konsolen-Warnung, gibt `None` zurück. `audio_url` bleibt `NULL`, `audio_pfad` (lokaler Pfad) wird trotzdem normal gesetzt. Schritt 3/4 zeigt sich als "erfolgreich" (nur ohne öffentliche URL in der Zusammenfassung). | `generiere_audio.py`, `lade_audio_hoch()` |
+| Datenbank nicht erreichbar | Kein zentraler Kill-Switch, kein Retry irgendwo in der Pipeline - Verhalten ist uneinheitlich, in beiden Skripten identisch: In `rss_einlesen.py` landet ein DB-Fehler im selben Pro-Feed-`try/except` wie ein Netzwerkfehler → Schritt zeigt trotzdem "erfolgreich". In den meisten anderen Schritten gibt es kein eigenes Try/Except um DB-Aufrufe → Exception propagiert bis `fuehre_schritt_aus()`, Schritt "fehlgeschlagen", Pipeline läuft trotzdem weiter (meist ebenso erfolglos, da dieselbe DB betroffen ist). `starte_lauf_protokoll()`/`aktualisiere_lauf_protokoll()` sind eigens try/except-geschützt (nur Konsolen-Warnung). | verstreut über alle Module; zentral `pipeline_utils.py`, `fuehre_schritt_aus()` |
+| Lauf insgesamt nicht rechtzeitig fertig | **Bekannte Lücke:** Keine Uhrzeit-/Deadline-Prüfung im Python-Code (kein einziger Treffer für "deadline"/"timeout" in der ganzen Codebase, weder in `sammellauf.py` noch `morgenlauf.py`). Einziger Schutz ist je `timeout-minutes: 30` auf Job-Ebene in beiden GitHub-Actions-Workflows - bricht den jeweiligen Lauf nach 30 Minuten hart ab, unabhängig von einer 8-Uhr-Deadline. Zusätzliche, neue Lücke durch die Trennung: läuft `sammellauf.py` selbst zu spät oder zu lange, gibt es **keine automatische Prüfung**, ob genug Zeit bis zum geplanten Start von `morgenlauf.py` bleibt - das muss aktuell manuell überwacht werden (siehe Abschnitt 10). Der Artefakt-Upload-Schritt (`if: always()`) läuft laut GitHub-Actions-Verhalten auch bei einem Timeout-Abbruch noch, liefert dann aber ggf. nur ein unvollständiges `lauf.log`. | `.github/workflows/sammellauf.yml`/`morgenlauf.yml` (je `timeout-minutes: 30`) - keine Entsprechung in den Python-Skripten |
 
 ---
 

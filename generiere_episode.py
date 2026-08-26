@@ -79,7 +79,8 @@ OFFENE_STATUS = ("neu", "in Verfolgung")
 MANUSKRIPT_ZIEL_MIN_WOERTER = 1300
 MANUSKRIPT_ZIEL_MAX_WOERTER = 1450
 MANUSKRIPT_HARTE_MIN_WOERTER = 1200
-MANUSKRIPT_MAX_VERSUCHE = 2
+MANUSKRIPT_MAX_VERSUCHE = 3
+MANUSKRIPT_MAX_OUTPUT_TOKENS = 8192
 PFLICHT_PLATZHALTER = (
     "{PERSONA}",
     "{THEMEN_BLOCK}",
@@ -438,15 +439,26 @@ def erstelle_manuskript(
     for versuch in range(1, MANUSKRIPT_MAX_VERSUCHE + 1):
         versuchs_prompt = prompt
         if versuch > 1:
+            bisherige_wortzahl = len(_IDS_ZEILE.sub("", antwort).strip().split())
             versuchs_prompt += (
-                "\n\nDer vorherige Entwurf war deutlich zu kurz. Schreibe das Manuskript vollständig "
-                f"neu mit {MANUSKRIPT_ZIEL_MIN_WOERTER}-{MANUSKRIPT_ZIEL_MAX_WOERTER} Wörtern. "
-                "Erweitere ausschließlich die journalistische Substanz: belegte Details, Hintergrund, "
+                "\n\n--- ZU KURZER ENTWURF: VERBINDLICHE ÜBERARBEITUNG ---\n"
+                f"Der folgende Entwurf hat nur {bisherige_wortzahl} Wörter. Überarbeite genau diesen "
+                f"Entwurf zu einem vollständigen Manuskript mit {MANUSKRIPT_ZIEL_MIN_WOERTER} bis "
+                f"{MANUSKRIPT_ZIEL_MAX_WOERTER} Wörtern. Gib anschließend das gesamte überarbeitete "
+                "Manuskript aus, nicht nur Ergänzungen. Erweitere ausschließlich die journalistische "
+                "Substanz: zusätzliche belegte Details aus den oben bereitgestellten Themen, Hintergrund, "
                 "Zusammenhänge, Folgen für Unternehmen und konkrete Handlungsmöglichkeiten. Verwende "
-                "kein zusätzliches Storytelling und keine Wiederholungen. Zähle die Wörter vor der Ausgabe."
+                "kein zusätzliches Storytelling, keine erfundenen Inhalte und keine Wiederholungen. "
+                "Erhalte am Ende die Zeile VERWENDETE_THEMEN_IDS.\n\n"
+                "BISHERIGER ENTWURF:\n"
+                f"{antwort}\n"
+                "--- ENDE DES BISHERIGEN ENTWURFS ---"
             )
 
-        rohantwort = chat_model.generate_content(versuchs_prompt)
+        rohantwort = chat_model.generate_content(
+            versuchs_prompt,
+            generation_config={"max_output_tokens": MANUSKRIPT_MAX_OUTPUT_TOKENS},
+        )
         kosten_tracking.logge_api_kosten(
             supabase,
             dienst="gemini",

@@ -4,8 +4,9 @@ Reihenfolge:
 1. rss_einlesen.main()                                    - neue Rohnachrichten holen
 2. recherche_und_redaktion.fuehre_recherche_agenten_aus()  - Vorschläge sammeln
 3. recherche_und_redaktion.fuehre_redaktion_aus()          - Vorschläge entscheiden
-4. recherche_und_redaktion.verarbeite_akzeptierte_entscheidungen() - Themen anlegen/updaten
-5. recherche_und_redaktion.pruefe_update_reaktivierung()   - Updates zu gesendeten Themen prüfen
+4. recherche_und_redaktion.fuehre_notfall_auffuellung_aus() - Sicherheitsnetz bei zu wenig Themen
+5. recherche_und_redaktion.verarbeite_akzeptierte_entscheidungen() - Themen anlegen/updaten
+6. recherche_und_redaktion.pruefe_update_reaktivierung()   - Updates zu gesendeten Themen prüfen
 
 Erzeugt/aktualisiert nur "rohnachrichten", "agent_vorschlaege",
 "redaktion_entscheidungen" sowie "themen"/"themen_updates" - schreibt NIE in
@@ -17,9 +18,17 @@ Deadline fertig sein) getrennt getaktet und überwacht werden können.
 
 Jeder Schritt läuft in einem eigenen try/except (siehe pipeline_utils.py):
 schlägt einer fehl (Exception, API-Fehler wie 429 o.ä.), wird das deutlich
-geloggt, aber die Kette läuft mit dem nächsten Schritt weiter. Schritt 5
-(Update-Reaktivierung) läuft bewusst NACH Schritt 4, damit auch Updates
-berücksichtigt werden, die im selben Lauf durch Schritt 4 selbst entstehen.
+geloggt, aber die Kette läuft mit dem nächsten Schritt weiter. Schritt 4
+(Notfall-Auffüllung) läuft bewusst NACH der normalen Redaktion (3.) und VOR
+der Verarbeitung (5.): reicht die normale Redaktion allein nicht auf
+MIN_THEMEN_FUER_EPISODE offene Themen, werden zunächst zurückgestellte, dann
+notfalls auch bereits abgelehnte Vorschläge mit gelockertem Relevanz-Maßstab
+erneut geprüft und bei Eignung akzeptiert - Duplikate, Gerüchte und
+faktisch unbelegte Meldungen bleiben dabei weiterhin ausgeschlossen (siehe
+recherche_und_redaktion.py, Punkt 6 im Modul-Docstring). Ist bereits genug
+Material vorhanden, tut Schritt 4 nichts. Schritt 6 (Update-Reaktivierung)
+läuft bewusst NACH Schritt 5, damit auch Updates berücksichtigt werden, die
+im selben Lauf durch Schritt 5 selbst entstehen.
 
 Am Ende wird eine Zusammenfassung ausgegeben und ein Protokoll-Eintrag
 (Gesamtlaufzeit, Erfolgsstatus, Fehlerdetails, lauftyp="sammellauf") in der
@@ -54,6 +63,12 @@ def formatiere_verarbeitung(ergebnisse: list[dict] | None) -> str:
     return f"{len(ergebnisse)} verarbeitet ({neu} neu, {updates} Updates, {duplikate} Duplikate)"
 
 
+def formatiere_notfall_auffuellung(anzahl: int | None) -> str:
+    if not anzahl:
+        return "genug Themen vorhanden, keine Auffüllung nötig"
+    return f"{anzahl} Thema/Themen per Notfall-Auffüllung akzeptiert"
+
+
 def formatiere_update_reaktivierung(anzahl: int | None) -> str:
     if not anzahl:
         return "keine neuen Updates zu bereits gesendeten Themen"
@@ -66,25 +81,33 @@ def main() -> None:
 
     lauf_id = pipeline_utils.starte_lauf_protokoll(lauftyp="sammellauf")
 
-    schritte.append(pipeline_utils.fuehre_schritt_aus("1/5 RSS-Feeds einlesen", rss_einlesen.main))
+    schritte.append(pipeline_utils.fuehre_schritt_aus("1/6 RSS-Feeds einlesen", rss_einlesen.main))
 
     schritte.append(
         pipeline_utils.fuehre_schritt_aus(
-            "2/5 Recherche-Agenten ausführen",
+            "2/6 Recherche-Agenten ausführen",
             lambda: recherche_und_redaktion.fuehre_recherche_agenten_aus(lauf_id=lauf_id),
         )
     )
 
     schritte.append(
         pipeline_utils.fuehre_schritt_aus(
-            "3/5 Redaktion ausführen",
+            "3/6 Redaktion ausführen",
             lambda: recherche_und_redaktion.fuehre_redaktion_aus(lauf_id=lauf_id),
         )
     )
 
     schritte.append(
         pipeline_utils.fuehre_schritt_aus(
-            "4/5 Akzeptierte Entscheidungen verarbeiten",
+            "4/6 Notfall-Auffüllung bei zu wenig Themen",
+            lambda: recherche_und_redaktion.fuehre_notfall_auffuellung_aus(lauf_id=lauf_id),
+            formatiere_notfall_auffuellung,
+        )
+    )
+
+    schritte.append(
+        pipeline_utils.fuehre_schritt_aus(
+            "5/6 Akzeptierte Entscheidungen verarbeiten",
             lambda: recherche_und_redaktion.verarbeite_akzeptierte_entscheidungen(lauf_id=lauf_id),
             formatiere_verarbeitung,
         )
@@ -92,7 +115,7 @@ def main() -> None:
 
     schritte.append(
         pipeline_utils.fuehre_schritt_aus(
-            "5/5 Update-Reaktivierung prüfen",
+            "6/6 Update-Reaktivierung prüfen",
             lambda: recherche_und_redaktion.pruefe_update_reaktivierung(lauf_id=lauf_id),
             formatiere_update_reaktivierung,
         )

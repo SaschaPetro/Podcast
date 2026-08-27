@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import tempfile
 import unittest
@@ -257,6 +258,174 @@ class OrchestrierungsTests(unittest.TestCase):
         self.assertTrue(modul.faktencheck_blockiert_audio({"widerspruch": 1, "nicht_belegt": 0}))
         self.assertTrue(modul.faktencheck_blockiert_audio({"widerspruch": 0, "nicht_belegt": 1}))
         self.assertFalse(modul.faktencheck_blockiert_audio({"widerspruch": 0, "nicht_belegt": 0}))
+
+
+class _FakeQueryResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeTable:
+    """Minimales Supabase-Query-Builder-Double: genug, um die konkreten
+    Aufruf-Ketten aus recherche_und_redaktion.py nachzubilden (select/eq/
+    is_/in_/update/execute), ohne echte Supabase-Verbindung."""
+
+    def __init__(self, fake_supabase, name):
+        self.fake_supabase = fake_supabase
+        self.name = name
+        self.status_filter = None
+        self.in_values = None
+        self.update_daten = None
+        self.eq_id = None
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, feld, wert):
+        if feld == "status":
+            self.status_filter = wert
+        if feld == "id":
+            self.eq_id = wert
+        return self
+
+    def is_(self, _feld, _wert):
+        return self
+
+    def in_(self, _feld, werte):
+        self.in_values = set(werte)
+        return self
+
+    def update(self, daten):
+        self.update_daten = daten
+        return self
+
+    def execute(self):
+        if self.update_daten is not None:
+            self.fake_supabase.updates.append((self.name, self.eq_id, self.update_daten))
+            return _FakeQueryResult([])
+        if self.name == "themen":
+            return _FakeQueryResult(self.fake_supabase.themen)
+        if self.name == "redaktion_entscheidungen":
+            return _FakeQueryResult(
+                self.fake_supabase.entscheidungen_nach_status.get(self.status_filter, [])
+            )
+        if self.name == "agent_vorschlaege":
+            return _FakeQueryResult(
+                [v for v in self.fake_supabase.vorschlaege if v["id"] in self.in_values]
+            )
+        if self.name == "rohnachrichten":
+            return _FakeQueryResult(
+                [r for r in self.fake_supabase.rohnachrichten if r["id"] in self.in_values]
+            )
+        if self.name == "agenten_konfiguration":
+            return _FakeQueryResult(self.fake_supabase.agenten)
+        raise AssertionError(f"Unerwartete Tabelle in Test: {self.name}")
+
+
+class _FakeSupabase:
+    def __init__(self, themen, entscheidungen_nach_status, vorschlaege, rohnachrichten, agenten):
+        self.themen = themen
+        self.entscheidungen_nach_status = entscheidungen_nach_status
+        self.vorschlaege = vorschlaege
+        self.rohnachrichten = rohnachrichten
+        self.agenten = agenten
+        self.updates: list[tuple[str, str, dict]] = []
+
+    def table(self, name):
+        return _FakeTable(self, name)
+
+
+def _gemini_json_antwort(payload) -> MagicMock:
+    return MagicMock(
+        text=json.dumps(payload),
+        usage_metadata=MagicMock(prompt_token_count=1, candidates_token_count=1),
+    )
+
+
+class NotfallAuffuellungTests(unittest.TestCase):
+    """Deckt die Notfall-Auffüllung ab (recherche_und_redaktion.py,
+    fuehre_notfall_auffuellung_aus): Sicherheitsnetz, das bei zu wenig
+    offenen Themen zunächst zurückgestellte, dann abgelehnte Vorschläge mit
+    gelockertem Maßstab erneut prüfen lässt - siehe Kontext: morgenlauf
+    scheiterte an zu kurzem Manuskript, weil nur 3 offene Themen vorlagen."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("GEMINI_API_KEY", "test")
+        os.environ.setdefault("SUPABASE_URL", "http://localhost")
+        os.environ.setdefault("SUPABASE_KEY", "test")
+        cls.modul = importlib.import_module("recherche_und_redaktion")
+
+    def test_genug_themen_vorhanden_ist_no_op(self):
+        supabase = _FakeSupabase(
+            themen=[{"id": f"t{i}"} for i in range(self.modul.MIN_THEMEN_FUER_EPISODE)],
+            entscheidungen_nach_status={"akzeptiert": []},
+            vorschlaege=[],
+            rohnachrichten=[],
+            agenten=[],
+        )
+        chat_model = MagicMock()
+
+        with (
+            patch.object(self.modul, "hole_supabase_client", return_value=supabase),
+            patch.object(self.modul, "hole_chat_model", return_value=chat_model),
+        ):
+            anzahl = self.modul.fuehre_notfall_auffuellung_aus()
+
+        self.assertEqual(anzahl, 0)
+        chat_model.generate_content.assert_not_called()
+        self.assertEqual(supabase.updates, [])
+
+    def test_zu_wenig_themen_zieht_erst_zurueckgestellte_dann_abgelehnte(self):
+        supabase = _FakeSupabase(
+            themen=[{"id": "t1"}],
+            entscheidungen_nach_status={
+                "akzeptiert": [],
+                "zurueckgestellt": [
+                    {"id": "e1", "vorschlag_id": "v1", "begruendung": "Gut, aber gestern kein Platz"}
+                ],
+                "abgelehnt": [
+                    {"id": "e2", "vorschlag_id": "v2", "begruendung": "Nur mittlere Relevanz"},
+                    {"id": "e3", "vorschlag_id": "v3", "begruendung": "Duplikat einer älteren Meldung"},
+                ],
+            },
+            vorschlaege=[
+                {"id": "v1", "rohnachricht_id": "r1"},
+                {"id": "v2", "rohnachricht_id": "r2"},
+                {"id": "v3", "rohnachricht_id": "r3"},
+            ],
+            rohnachrichten=[
+                {"id": "r1", "titel": "Thema A", "text": "Text A"},
+                {"id": "r2", "titel": "Thema B", "text": "Text B"},
+                {"id": "r3", "titel": "Thema C (Duplikat)", "text": "Text C"},
+            ],
+            agenten=[{"id": "a1", "name": "Redaktion", "fokus_beschreibung": "KMU-Fokus"}],
+        )
+        chat_model = MagicMock()
+        chat_model.generate_content.side_effect = [
+            _gemini_json_antwort([{"index": 0, "begruendung": "Sachlich korrekt, trotzdem aufnehmen"}]),
+            _gemini_json_antwort([{"index": 0, "begruendung": "Kein Duplikat, bleibt drin"}]),
+        ]
+
+        with (
+            patch.object(self.modul, "hole_supabase_client", return_value=supabase),
+            patch.object(self.modul, "hole_chat_model", return_value=chat_model),
+            patch.object(self.modul.kosten_tracking, "logge_api_kosten"),
+        ):
+            anzahl = self.modul.fuehre_notfall_auffuellung_aus()
+
+        self.assertEqual(anzahl, 2)
+        self.assertEqual(chat_model.generate_content.call_count, 2)
+
+        aktualisierte_ids = {eq_id for (_tabelle, eq_id, _daten) in supabase.updates}
+        self.assertEqual(aktualisierte_ids, {"e1", "e2"})
+        self.assertNotIn("e3", aktualisierte_ids)
+
+        daten_nach_id = {eq_id: daten for (_tabelle, eq_id, daten) in supabase.updates}
+        self.assertEqual(daten_nach_id["e1"]["status"], "akzeptiert")
+        self.assertTrue(daten_nach_id["e1"]["akzeptiert"])
+        self.assertIn("zurueckgestellt", daten_nach_id["e1"]["begruendung"])
+        self.assertIn("abgelehnt", daten_nach_id["e2"]["begruendung"])
 
 
 if __name__ == "__main__":

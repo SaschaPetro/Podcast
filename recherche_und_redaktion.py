@@ -45,6 +45,20 @@ Drei unabhängig aufrufbare Funktionen:
    selbst. Voraussetzung: Migration
    20260825140000_zweite_quelle_verifikation.sql muss angewendet sein.
 
+6. fuehre_notfall_auffuellung_aus(zusatz_anweisung=None)
+   Sicherheitsnetz gegen zu kurze Episoden (siehe morgenlauf.py: bricht ab,
+   wenn das Manuskript unter der Mindestwortzahl bleibt - das passiert vor
+   allem, wenn schlicht zu wenige offene Themen vorliegen). Läuft NACH der
+   normalen Redaktion (3.) und VOR verarbeite_akzeptierte_entscheidungen()
+   (5.): Zählt aktuell offene Themen + bereits akzeptierte, aber noch nicht
+   verarbeitete Entscheidungen. Bleibt die Summe unter MIN_THEMEN_FUER_EPISODE,
+   werden zunächst zurückgestellte, danach - falls immer noch zu wenig -
+   abgelehnte Vorschläge erneut von Gemini geprüft: mit gelockertem
+   Relevanz-Maßstab, aber weiterhin ohne Duplikate, Gerüchte oder faktisch
+   unbelegte Meldungen. Geeignete Kandidaten werden auf Status "akzeptiert"
+   gesetzt, damit Schritt 5 daraus echte Themen macht. Ist bereits genug
+   Material vorhanden, tut die Funktion nichts.
+
 Voraussetzung: Migration 20260824120000_agenten_konfiguration_rolle.sql
 muss angewendet sein (Spalte "rolle" in agenten_konfiguration), sowie
 Migration 20260824160000_redaktion_update_entscheidungen.sql (Tabelle
@@ -75,6 +89,14 @@ MAX_ALTER_TAGE = 3
 MAX_ZURUECKSTELLUNG_TAGE = 3
 GUELTIGE_STATUS = {"akzeptiert", "abgelehnt", "zurueckgestellt"}
 ZWEITE_QUELLE_MAX_TREFFER = 5
+# Deckt sich mit der "mindestens 5"-Vorgabe in den Recherche-/Redaktions-
+# Prompts weiter unten - das ist die Zielgröße, für die diese Prompts bereits
+# ausgelegt sind. Reicht die normale Redaktion allein nicht aus, greift
+# fuehre_notfall_auffuellung_aus() als Sicherheitsnetz (siehe Docstring oben).
+MIN_THEMEN_FUER_EPISODE = 5
+# Muss mit generiere_episode.OFFENE_STATUS übereinstimmen - hier bewusst
+# dupliziert statt importiert, damit die beiden Module unabhängig bleiben.
+OFFENE_THEMEN_STATUS = ("neu", "in Verfolgung")
 
 
 def hole_supabase_client():
@@ -699,11 +721,16 @@ def pruefe_update_reaktivierung(zusatz_anweisung: str | None = None, lauf_id: st
     return pruefe_updates_zu_gesendeten_themen(supabase, chat_model, agent, zusatz_anweisung, lauf_id=lauf_id)
 
 
-def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:
+def hole_entscheidungen_ohne_thema(supabase, status: str) -> list[dict]:
+    """Holt alle Entscheidungen mit gegebenem Status, die noch keinem Thema
+    zugeordnet sind (thema_id IS NULL), samt Titel/Text der zugehörigen
+    Rohnachricht. Gemeinsame Basis für hole_akzeptierte_offene_entscheidungen()
+    und die Notfall-Auffüllung (die dieselbe Abfrage für "zurueckgestellt" und
+    "abgelehnt" braucht)."""
     entscheidungen = (
         supabase.table("redaktion_entscheidungen")
         .select("id, vorschlag_id, begruendung")
-        .eq("akzeptiert", True)
+        .eq("status", status)
         .is_("thema_id", "null")
         .execute()
         .data
@@ -739,11 +766,16 @@ def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:
         ergebnis.append(
             {
                 "entscheidung_id": e["id"],
+                "begruendung": e.get("begruendung") or "",
                 "rohnachricht_titel": rohnachricht["titel"] or "",
                 "rohnachricht_text": rohnachricht["text"] or "",
             }
         )
     return ergebnis
+
+
+def hole_akzeptierte_offene_entscheidungen(supabase) -> list[dict]:
+    return hole_entscheidungen_ohne_thema(supabase, "akzeptiert")
 
 
 def hole_tavily_treffer(query: str) -> list[dict]:
@@ -935,6 +967,144 @@ def verarbeite_akzeptierte_entscheidungen(lauf_id: str | None = None) -> list[di
     return ergebnisse
 
 
+def zaehle_offene_themen(supabase) -> int:
+    return len(
+        supabase.table("themen").select("id").in_("status", OFFENE_THEMEN_STATUS).execute().data
+    )
+
+
+def baue_notfall_kandidat_block(i: int, k: dict) -> str:
+    return (
+        f"[{i}] Titel: {k['rohnachricht_titel']}\n"
+        f"Ursprüngliche Begründung (Ablehnung/Zurückstellung): {k['begruendung']}\n"
+        f"Text: {k['rohnachricht_text']}"
+    )
+
+
+def waehle_notfall_kandidaten(
+    supabase,
+    chat_model,
+    systemkontext: str,
+    kandidaten: list[dict],
+    anzahl: int,
+    lauf_id: str | None = None,
+) -> list[dict]:
+    """Wählt aus bereits abgelehnten/zurückgestellten Vorschlägen die am
+    wenigsten schlechten aus, wenn für die heutige Episode sonst zu wenig
+    Themen zusammenkommen. Lockert NUR den Relevanz-Maßstab - Duplikate,
+    Gerüchte und faktisch unbelegte Meldungen bleiben auch im Notfall
+    ausgeschlossen, damit die Episode weiterhin sachlich korrekt bleibt."""
+    kandidaten_block = "\n\n".join(baue_notfall_kandidat_block(i, k) for i, k in enumerate(kandidaten))
+
+    prompt = (
+        f"{systemkontext}\n\n"
+        f"NOTFALL-AUFFÜLLUNG: Für die heutige Episode gibt es sonst zu wenige Themen "
+        f"(Ziel: mindestens {MIN_THEMEN_FUER_EPISODE}). Die folgenden Vorschläge wurden "
+        "zuvor abgelehnt oder zurückgestellt. Wähle davon bis zu "
+        f"{anzahl} aus, die TROTZ geringerer Relevanz sachlich korrekt und aktuell sind - "
+        "am Rande nützlich für kleine oder mittlere Unternehmen reicht als Maßstab. Wähle "
+        "NIEMALS einen Vorschlag, der laut ursprünglicher Begründung ein Duplikat, ein "
+        "Gerücht oder faktisch unbelegt ist - diese Kriterien werden NICHT gelockert. Gib "
+        "für jede Auswahl eine kurze Begründung. Erfüllen weniger als "
+        f"{anzahl} Vorschläge die Mindestanforderung, wähle entsprechend weniger aus - "
+        "erzwinge die Anzahl nicht.\n\n"
+        f"{kandidaten_block}\n\n"
+        "Antworte NUR mit JSON in diesem Format: "
+        '[{"index": int, "begruendung": string}]'
+    )
+
+    antwort = chat_model.generate_content(
+        prompt,
+        generation_config={"response_mime_type": "application/json"},
+    )
+
+    kosten_tracking.logge_api_kosten(
+        supabase,
+        dienst="gemini",
+        modell=CHAT_MODEL,
+        schritt="notfall_auffuellung",
+        einheit_typ="tokens",
+        menge_input=antwort.usage_metadata.prompt_token_count,
+        menge_output=antwort.usage_metadata.candidates_token_count,
+        lauf_id=lauf_id,
+    )
+
+    auswahl = json.loads(antwort.text)
+
+    ergebnis = []
+    for eintrag in auswahl:
+        index = eintrag.get("index")
+        if index is None or not (0 <= index < len(kandidaten)):
+            print(f"-> Warnung: Notfall-Auswahl mit ungültigem Index {index} wird übersprungen.")
+            continue
+        ergebnis.append({**kandidaten[index], "notfall_begruendung": eintrag.get("begruendung", "")})
+    return ergebnis[:anzahl]
+
+
+def fuehre_notfall_auffuellung_aus(zusatz_anweisung: str | None = None, lauf_id: str | None = None) -> int:
+    """Sicherheitsnetz: sorgt dafür, dass für die nächste Episode genug Themen
+    vorhanden sind (siehe Modul-Docstring, Punkt 6, und generiere_episode.py -
+    dort bricht die Manuskripterstellung ab, wenn zu wenig Stoff für die
+    Mindestwortzahl vorliegt). Greift nur ein, wenn die normale Redaktion
+    (Schritt 3) nicht auf MIN_THEMEN_FUER_EPISODE kommt; sonst No-Op."""
+    supabase = hole_supabase_client()
+
+    vorhanden = zaehle_offene_themen(supabase) + len(hole_akzeptierte_offene_entscheidungen(supabase))
+    if vorhanden >= MIN_THEMEN_FUER_EPISODE:
+        print(
+            f"Notfall-Auffüllung: {vorhanden} Themen vorhanden (Minimum "
+            f"{MIN_THEMEN_FUER_EPISODE}), keine Auffüllung nötig.\n"
+        )
+        return 0
+
+    fehlende = MIN_THEMEN_FUER_EPISODE - vorhanden
+    print(
+        f"Notfall-Auffüllung: nur {vorhanden} Thema/Themen vorhanden (Minimum "
+        f"{MIN_THEMEN_FUER_EPISODE}), suche bis zu {fehlende} zusätzliche(s) Thema/Themen "
+        "unter bereits abgelehnten/zurückgestellten Vorschlägen."
+    )
+
+    chat_model = hole_chat_model()
+    agent = hole_aktiven_redaktionsagenten(supabase)
+    systemkontext = baue_systemkontext(agent.get("fokus_beschreibung") if agent else "", zusatz_anweisung)
+
+    jetzt = datetime.now(timezone.utc).isoformat()
+    aufgefuellt = 0
+
+    for status in ("zurueckgestellt", "abgelehnt"):
+        if fehlende <= 0:
+            break
+        kandidaten = hole_entscheidungen_ohne_thema(supabase, status)
+        if not kandidaten:
+            continue
+
+        ausgewaehlt = waehle_notfall_kandidaten(
+            supabase, chat_model, systemkontext, kandidaten, fehlende, lauf_id=lauf_id
+        )
+        for k in ausgewaehlt:
+            supabase.table("redaktion_entscheidungen").update(
+                {
+                    "status": "akzeptiert",
+                    "akzeptiert": True,
+                    "begruendung": f'[Notfall-Auffüllung, ursprünglich "{status}"] {k["notfall_begruendung"]}',
+                    "entschieden_am": jetzt,
+                }
+            ).eq("id", k["entscheidung_id"]).execute()
+            print(f'-> Notfall-akzeptiert (vorher {status}): "{k["rohnachricht_titel"]}"')
+            aufgefuellt += 1
+            fehlende -= 1
+
+    if aufgefuellt == 0:
+        print(
+            "-> Keine geeigneten Notfall-Kandidaten gefunden (weder zurückgestellt noch "
+            "abgelehnt passend) - Episode läuft ggf. mit weniger Themen als gewünscht.\n"
+        )
+    else:
+        print(f"-> {aufgefuellt} Thema/Themen per Notfall-Auffüllung akzeptiert.\n")
+
+    return aufgefuellt
+
+
 if __name__ == "__main__":
     befehl = sys.argv[1] if len(sys.argv) > 1 else "recherche"
 
@@ -946,6 +1116,8 @@ if __name__ == "__main__":
         pruefe_update_reaktivierung()
     elif befehl == "verarbeite":
         verarbeite_akzeptierte_entscheidungen()
+    elif befehl == "notfall":
+        fuehre_notfall_auffuellung_aus()
     elif befehl == "agent":
         if len(sys.argv) < 3:
             print('Nutzung: python recherche_und_redaktion.py agent "<Agent-Name>" ["<Zusatz-Anweisung>"]')
@@ -954,5 +1126,5 @@ if __name__ == "__main__":
     else:
         print(
             f'Unbekannter Befehl: "{befehl}". Nutze "recherche", "redaktion", '
-            '"update_reaktivierung", "verarbeite" oder "agent".'
+            '"update_reaktivierung", "verarbeite", "notfall" oder "agent".'
         )

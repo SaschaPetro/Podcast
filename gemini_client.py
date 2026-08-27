@@ -64,16 +64,22 @@ def zaehle_tokens(modell: str, text: str) -> int:
     return int(antwort.total_tokens)
 
 
-def erzeuge_tts_audio(modell: str, text: str, voice_name: str) -> tuple[bytes, int, int]:
+def erzeuge_tts_audio(
+    modell: str,
+    text: str,
+    voice_name: str,
+    sprechstil: str | None = None,
+) -> tuple[bytes, int, int]:
     """Erzeugt Sprachaudio ueber Gemini TTS. Gibt (pcm_bytes, input_tokens,
     output_tokens) zurueck: rohe PCM-Daten (24kHz, 16-bit, mono -
     unkomprimiert, ohne Container - der Aufrufer muss sie selbst in ein
     abspielbares Format bringen) sowie die tatsaechlich abgerechneten
     Tokenzahlen direkt aus der API-Antwort (usage_metadata), keine
     Schaetzung. Siehe https://ai.google.dev/gemini-api/docs/speech-generation."""
+    inhalt = f"{sprechstil.strip()}\n\n{text}" if sprechstil else text
     antwort = _neuer_client().models.generate_content(
         model=modell,
-        contents=text,
+        contents=inhalt,
         config=types.GenerateContentConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(

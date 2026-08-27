@@ -56,8 +56,31 @@ class GeminiClientTests(unittest.TestCase):
 
         self.assertEqual(pcm, b"\x00\x00\x01\x00")
         self.assertEqual((input_tokens, output_tokens), (12, 34))
+        self.assertEqual(client.models.generate_content.call_args.kwargs["contents"], "Text")
         config = client.models.generate_content.call_args.kwargs["config"]
         self.assertEqual(config.response_modalities, ["AUDIO"])
+
+    def test_tts_stellt_sprechstilanweisung_vor_den_text(self):
+        from gemini_client import erzeuge_tts_audio
+
+        client = MagicMock()
+        client.models.generate_content.return_value = MagicMock(
+            candidates=[
+                MagicMock(
+                    content=MagicMock(
+                        parts=[MagicMock(inline_data=MagicMock(data=b"\x00\x00"))]
+                    )
+                )
+            ],
+            usage_metadata=MagicMock(prompt_token_count=1, candidates_token_count=1),
+        )
+        with patch("gemini_client._neuer_client", return_value=client):
+            erzeuge_tts_audio("modell", "Nachricht.", "Charon", "Sprich motiviert.")
+
+        self.assertEqual(
+            client.models.generate_content.call_args.kwargs["contents"],
+            "Sprich motiviert.\n\nNachricht.",
+        )
 
 
 class PromptTests(unittest.TestCase):
@@ -165,6 +188,15 @@ class TtsTests(unittest.TestCase):
             tokens = self.audio._via_gemini_tts("Text", str(ziel))
 
             self.assertEqual(tokens, (21, 41))
+            self.assertEqual(
+                self.audio.erzeuge_tts_audio.call_args.args,
+                (
+                    self.audio.GEMINI_TTS_MODEL,
+                    "Teil zwei.",
+                    "Charon",
+                    self.audio.GEMINI_TTS_SPRECHSTIL,
+                ),
+            )
             self.assertTrue(ziel.exists())
             self.assertGreater(ziel.stat().st_size, 0)
             self.assertTrue(ziel.read_bytes().startswith((b"ID3", b"\xff\xfb", b"\xff\xf3")))

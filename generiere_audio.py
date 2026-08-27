@@ -59,6 +59,15 @@ GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
 # sachlichen Nachrichtenformat. Alternativen fürs Probehören: "Rasalgethi"
 # (ebenfalls "Informative") oder "Sadaltager" ("Knowledgeable").
 GEMINI_TTS_VOICE = "Charon"
+# Gemini TTS kann die Sprechweise über eine natürliche Regieanweisung im
+# Eingabetext steuern. Charon soll motiviert und präsent klingen, ohne die
+# Seriosität eines Nachrichtenformats zu verlieren oder hektisch zu werden.
+GEMINI_TTS_SPRECHSTIL = (
+    "Sprich den folgenden deutschen Nachrichtentext motiviert, engagiert und "
+    "mit spürbar positiver Energie. Betone die wichtigsten Aussagen klar und "
+    "abwechslungsreich. Bleibe dabei professionell, glaubwürdig und ruhig genug "
+    "für ein seriöses Nachrichtenformat; sprich weder monoton noch überdreht."
+)
 # Antwort ist rohes PCM: 24kHz, 16-bit, mono - wird direkt im Speicher (ohne
 # WAV-Zwischendatei) über lameenc zu MP3 konvertiert, siehe _pcm_zu_mp3().
 # lameenc statt ffmpeg/pydub: reines Python-Wheel (bindet den LAME-Encoder
@@ -260,7 +269,10 @@ def _via_gemini_tts(text: str, dateipfad: str) -> tuple[int, int]:
     output_tokens = 0
     for chunk in chunks:
         pcm, chunk_input_tokens, chunk_output_tokens = erzeuge_tts_audio(
-            GEMINI_TTS_MODEL, chunk, GEMINI_TTS_VOICE
+            GEMINI_TTS_MODEL,
+            chunk,
+            GEMINI_TTS_VOICE,
+            GEMINI_TTS_SPRECHSTIL,
         )
         pcm_teile.append(pcm)
         input_tokens += chunk_input_tokens

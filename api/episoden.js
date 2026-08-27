@@ -51,10 +51,21 @@ export default async function handler(request, response) {
       `episoden_quellen?select=episode_id,quelle_name,quelle_url,titel&episode_id=in.(${episodeIds})&order=zeitstempel.asc`,
       controller.signal,
     );
+    // Direkt der Folge zugeordnete Erzeugungskosten (Manuskript, Faktencheck,
+    // Audio-Synthese) - Recherche/Redaktion-Kosten aus Takt 1 (sammellauf.py)
+    // haben keine episode_id (koennen mehreren/keiner spaeteren Folge dienen)
+    // und sind hier bewusst NICHT enthalten, um nichts Unbelegtes hochzurechnen.
+    const kosten = await querySupabase(
+      `api_kosten?select=episode_id,geschaetzte_kosten_usd&episode_id=in.(${episodeIds})`,
+      controller.signal,
+    );
 
     const result = episodes.map((episode) => ({
       ...episode,
       quellen: sources.filter((source) => source.episode_id === episode.id),
+      kosten_usd: kosten
+        .filter((eintrag) => eintrag.episode_id === episode.id)
+        .reduce((summe, eintrag) => summe + Number(eintrag.geschaetzte_kosten_usd || 0), 0),
     }));
 
     Object.entries(responseHeaders).forEach(([name, value]) => response.setHeader(name, value));

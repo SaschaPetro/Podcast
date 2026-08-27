@@ -22,7 +22,14 @@ async function getEpisodes() {
   if (!episodes.length) return [];
   const ids = episodes.map(({ id }) => id).join(",");
   const sources = await supabase(`episoden_quellen?select=episode_id,quelle_name,quelle_url,titel&episode_id=in.(${ids})&order=zeitstempel.asc`);
-  return episodes.map((episode) => ({ ...episode, quellen: sources.filter((source) => source.episode_id === episode.id) }));
+  const kosten = await supabase(`api_kosten?select=episode_id,geschaetzte_kosten_usd&episode_id=in.(${ids})`);
+  return episodes.map((episode) => ({
+    ...episode,
+    quellen: sources.filter((source) => source.episode_id === episode.id),
+    kosten_usd: kosten
+      .filter((eintrag) => eintrag.episode_id === episode.id)
+      .reduce((summe, eintrag) => summe + Number(eintrag.geschaetzte_kosten_usd || 0), 0),
+  }));
 }
 
 createServer(async (req, res) => {

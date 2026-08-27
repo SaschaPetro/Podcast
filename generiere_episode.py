@@ -83,6 +83,18 @@ MANUSKRIPT_ZIEL_MAX_WOERTER = 1600
 MANUSKRIPT_HARTE_MIN_WOERTER = 1350
 MANUSKRIPT_MAX_VERSUCHE = 2
 MANUSKRIPT_MAX_OUTPUT_TOKENS = 8192
+# WICHTIG (Ursache der Ausfälle vom 2026-08-27, u.a. Morgenlauf #10/#13):
+# gemini-3.5-flash denkt standardmäßig intern nach ("thinking"), und diese
+# unsichtbaren "thoughts" zählen mit gegen MANUSKRIPT_MAX_OUTPUT_TOKENS. Live
+# beobachtet: ~7861 von 8192 Tokens gingen ins Denken, nur 327 Tokens blieben
+# für den sichtbaren Text (finish_reason=MAX_TOKENS, Manuskript brach nach
+# einem Satz ab - unabhängig von der Zahl verfügbarer Themen). Mit
+# thinking_budget=0 lieferte derselbe Prompt in EINEM Versuch ein
+# vollständiges, natürlich beendetes Manuskript (finish_reason=STOP,
+# 1603 Wörter). Die journalistische Zusammenfassung braucht kein internes
+# Schritt-für-Schritt-Denken - das Budget soll komplett in den sichtbaren
+# Text gehen.
+MANUSKRIPT_THINKING_BUDGET = 0
 PFLICHT_PLATZHALTER = (
     "{PERSONA}",
     "{THEMEN_BLOCK}",
@@ -517,7 +529,10 @@ def erstelle_manuskript(
 
         rohantwort = chat_model.generate_content(
             versuchs_prompt,
-            generation_config={"max_output_tokens": MANUSKRIPT_MAX_OUTPUT_TOKENS},
+            generation_config={
+                "max_output_tokens": MANUSKRIPT_MAX_OUTPUT_TOKENS,
+                "thinking_config": {"thinking_budget": MANUSKRIPT_THINKING_BUDGET},
+            },
         )
         kosten_tracking.logge_api_kosten(
             supabase,

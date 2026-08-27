@@ -175,6 +175,34 @@ class PromptTests(unittest.TestCase):
         self.assertIn("In der heutigen schnelllebigen Welt", prompt)
         self.assertIn("Nutze ausschließlich Zahlen", prompt)
 
+    def test_manuskript_erzeugung_deaktiviert_thinking(self):
+        # Siehe generiere_episode.MANUSKRIPT_THINKING_BUDGET: gemini-3.5-flash
+        # verbrauchte live beobachtet ~7861 von 8192 max_output_tokens fuers
+        # unsichtbare "Denken" und brach das Manuskript nach ~325 sichtbaren
+        # Tokens ab (finish_reason=MAX_TOKENS) - unabhaengig von der Themenzahl.
+        # thinking_budget=0 muss deshalb bei jedem Versuch mitgeschickt werden.
+        chat_model = MagicMock()
+        genug_woerter = "Text mit genug Woertern " * 400
+        chat_model.generate_content.return_value = MagicMock(
+            text=f"{genug_woerter}\nVERWENDETE_THEMEN_IDS: abc",
+            usage_metadata=MagicMock(prompt_token_count=1, candidates_token_count=1),
+        )
+        template = "{PERSONA}\n{THEMEN_BLOCK}\n{WOCHENRUECKBLICK_ABSCHNITT}{FORMAT_HINWEIS_ABSCHNITT}{KI_KENNZEICHNUNG_HINWEIS}\n{EROEFFNUNGSSIGNATUR}"
+
+        with (
+            patch.object(self.modul, "hole_aktive_prompt_version", return_value={"prompt_text": template}),
+            patch.object(self.modul.kosten_tracking, "logge_api_kosten"),
+        ):
+            self.modul.erstelle_manuskript(MagicMock(), chat_model, "Persona", "Themen", None, "Begrüßung")
+
+        chat_model.generate_content.assert_called_once()
+        generation_config = chat_model.generate_content.call_args.kwargs["generation_config"]
+        self.assertEqual(
+            generation_config["thinking_config"],
+            {"thinking_budget": self.modul.MANUSKRIPT_THINKING_BUDGET},
+        )
+        self.assertEqual(self.modul.MANUSKRIPT_THINKING_BUDGET, 0)
+
     def test_verabschiedung_standard_und_freitag(self):
         standard = self.modul.baue_verabschiedung("standard")
         freitag = self.modul.baue_verabschiedung("freitag")

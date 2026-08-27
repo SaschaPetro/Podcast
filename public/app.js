@@ -4,7 +4,7 @@ const date=v=>new Intl.DateTimeFormat("de-DE",{weekday:"long",day:"2-digit",mont
 const title=e=>`Frühschicht vom ${new Intl.DateTimeFormat("de-DE",{day:"2-digit",month:"2-digit",year:"numeric"}).format(new Date(e.datum))}`;
 const summary=(t="")=>t.replace(/^.*?\n/,"").replace(/\s+/g," ").trim().slice(0,180)||"Das heutige KI-Briefing für den Mittelstand.";
 const time=s=>Number.isFinite(s)?`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`:"–:––";
-const kosten=v=>typeof v==="number"&&Number.isFinite(v)?`$${v.toFixed(3)} KI-Kosten`:"";
+const kosten=v=>typeof v!=="number"||!Number.isFinite(v)?"":v>0?`$${v.toFixed(3)} Kosten`:"Kostenlos erzeugt (Google-Kontingent)";
 const esc=v=>{const n=document.createElement("div");n.textContent=v;return n.innerHTML};
 const url=v=>{try{const u=new URL(v);return ["http:","https:"].includes(u.protocol)?u.href:"#"}catch{return"#"}};
 function select(e,autoplay=false){$("#now-title").textContent=title(e);$("#now-summary").textContent=summary(e.manuskripttext);$("#now-kosten").textContent=kosten(e.kosten_usd);audio.src=e.audio_url||"";play.disabled=!e.audio_url;drawer.innerHTML=e.quellen?.length?e.quellen.map(s=>`<a href="${url(s.quelle_url)}" target="_blank" rel="noopener"><small>${esc(s.quelle_name||"Quelle")}</small>${esc(s.titel||"Originalmeldung")} <b>↗</b></a>`).join(""):"<p>Für diese Folge sind noch keine Quellen hinterlegt.</p>";if(autoplay&&e.audio_url)audio.play();if(autoplay)$(".now").scrollIntoView({behavior:"smooth"})}

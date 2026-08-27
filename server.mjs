@@ -22,7 +22,9 @@ async function getEpisodes() {
   if (!episodes.length) return [];
   const ids = episodes.map(({ id }) => id).join(",");
   const sources = await supabase(`episoden_quellen?select=episode_id,quelle_name,quelle_url,titel&episode_id=in.(${ids})&order=zeitstempel.asc`);
-  const kosten = await supabase(`api_kosten?select=episode_id,geschaetzte_kosten_usd&episode_id=in.(${ids})`);
+  // Real bezahlter Betrag: gemini/gemini_tts laeuft aktuell im kostenlosen
+  // Kontingent (real $0) und wird deshalb ausgeschlossen - siehe api/episoden.js.
+  const kosten = await supabase(`api_kosten?select=episode_id,dienst,geschaetzte_kosten_usd&episode_id=in.(${ids})&dienst=not.in.(gemini,gemini_tts)`);
   return episodes.map((episode) => ({
     ...episode,
     quellen: sources.filter((source) => source.episode_id === episode.id),

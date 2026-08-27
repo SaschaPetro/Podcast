@@ -51,12 +51,18 @@ export default async function handler(request, response) {
       `episoden_quellen?select=episode_id,quelle_name,quelle_url,titel&episode_id=in.(${episodeIds})&order=zeitstempel.asc`,
       controller.signal,
     );
-    // Direkt der Folge zugeordnete Erzeugungskosten (Manuskript, Faktencheck,
-    // Audio-Synthese) - Recherche/Redaktion-Kosten aus Takt 1 (sammellauf.py)
-    // haben keine episode_id (koennen mehreren/keiner spaeteren Folge dienen)
-    // und sind hier bewusst NICHT enthalten, um nichts Unbelegtes hochzurechnen.
+    // Zeigt den TATSAECHLICH bezahlten Betrag, keine Schaetzung: dienst
+    // "gemini"/"gemini_tts" laeuft aktuell komplett im kostenlosen Google-
+    // Kontingent (Stand 2026-08-27 gegen ai.google.dev/gemini-api/docs/pricing
+    // geprueft, siehe modelle.py) - real bezahlt sind das $0, auch wenn
+    // api_kosten.geschaetzte_kosten_usd dort einen hypothetischen Bezahltarif-
+    // Wert fuehrt (fuer die interne Planung in kosten_tracking.py). Nur
+    // Deepgram/ElevenLabs (TTS-Fallback bei Gemini-Ausfall) sind echte bezahlte
+    // Dienste - deren Kosten werden hier NICHT ausgeschlossen. Ausserdem
+    // bewusst ohne Recherche/Redaktion-Kosten aus Takt 1 (sammellauf.py): die
+    // haben keine episode_id (koennen mehreren/keiner spaeteren Folge dienen).
     const kosten = await querySupabase(
-      `api_kosten?select=episode_id,geschaetzte_kosten_usd&episode_id=in.(${episodeIds})`,
+      `api_kosten?select=episode_id,dienst,geschaetzte_kosten_usd&episode_id=in.(${episodeIds})&dienst=not.in.(gemini,gemini_tts)`,
       controller.signal,
     );
 

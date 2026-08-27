@@ -1,11 +1,52 @@
 """Kleine Adapter-Schicht fuer das aktuelle Google Gen AI SDK."""
 import os
+import time
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 
 _client: genai.Client | None = None
+
+# Siehe Morgenlauf #12 (2026-08-27): "This model is currently experiencing
+# high demand" (503 UNAVAILABLE) brach die gesamte Episode ab, ohne dass
+# ueberhaupt ein zweiter Versuch unternommen wurde. 5xx-Serverfehler und 429
+# Rate-Limit sind typischerweise voruebergehend - alle anderen Fehler (400
+# Bad Request, 403, ...) sind dauerhaft und werden weiterhin sofort
+# durchgereicht (Retry wuerde nur Zeit kosten, ohne das Ergebnis zu aendern).
+RETRY_VERSUCHE = 3
+RETRY_BASIS_SEKUNDEN = 5
+
+
+def _ist_transienter_fehler(e: Exception) -> bool:
+    if isinstance(e, genai_errors.ServerError):
+        return True
+    if isinstance(e, genai_errors.ClientError) and getattr(e, "code", None) == 429:
+        return True
+    return False
+
+
+def _mit_retry(aufruf):
+    """Fuehrt `aufruf` (ein no-arg Callable) aus und wiederholt bei
+    transienten Gemini-Fehlern bis zu RETRY_VERSUCHE mal mit exponentiellem
+    Backoff (RETRY_BASIS_SEKUNDEN, RETRY_BASIS_SEKUNDEN*2, ...). Nicht-
+    transiente Fehler und der letzte Versuch werden unveraendert weitergereicht."""
+    letzter_fehler: Exception | None = None
+    for versuch in range(1, RETRY_VERSUCHE + 1):
+        try:
+            return aufruf()
+        except Exception as e:
+            letzter_fehler = e
+            if not _ist_transienter_fehler(e) or versuch == RETRY_VERSUCHE:
+                raise
+            wartezeit = RETRY_BASIS_SEKUNDEN * (2 ** (versuch - 1))
+            print(
+                f"WARNUNG: Gemini-Anfrage fehlgeschlagen ({type(e).__name__}: {e}), "
+                f"Versuch {versuch}/{RETRY_VERSUCHE}, warte {wartezeit}s..."
+            )
+            time.sleep(wartezeit)
+    raise letzter_fehler  # pragma: no cover - Schleife verlaesst immer per return/raise
 
 
 def _neuer_client():
@@ -37,20 +78,24 @@ class GeminiModell:
 
     def generate_content(self, prompt: str, generation_config: dict | None = None):
         config = types.GenerateContentConfig(**generation_config) if generation_config else None
-        return self.client.models.generate_content(
-            model=self.modellname, contents=prompt, config=config
+        return _mit_retry(
+            lambda: self.client.models.generate_content(
+                model=self.modellname, contents=prompt, config=config
+            )
         )
 
 
 def erzeuge_embedding(
     modell: str, text: str, task_type: str, output_dimensionality: int
 ) -> list[float]:
-    antwort = _neuer_client().models.embed_content(
-        model=modell.removeprefix("models/"),
-        contents=text,
-        config=types.EmbedContentConfig(
-            task_type=task_type, output_dimensionality=output_dimensionality
-        ),
+    antwort = _mit_retry(
+        lambda: _neuer_client().models.embed_content(
+            model=modell.removeprefix("models/"),
+            contents=text,
+            config=types.EmbedContentConfig(
+                task_type=task_type, output_dimensionality=output_dimensionality
+            ),
+        )
     )
     if not antwort.embeddings or antwort.embeddings[0].values is None:
         raise RuntimeError("Gemini lieferte kein Embedding.")
@@ -58,8 +103,10 @@ def erzeuge_embedding(
 
 
 def zaehle_tokens(modell: str, text: str) -> int:
-    antwort = _neuer_client().models.count_tokens(
-        model=modell.removeprefix("models/"), contents=text
+    antwort = _mit_retry(
+        lambda: _neuer_client().models.count_tokens(
+            model=modell.removeprefix("models/"), contents=text
+        )
     )
     return int(antwort.total_tokens)
 
@@ -77,17 +124,19 @@ def erzeuge_tts_audio(
     Tokenzahlen direkt aus der API-Antwort (usage_metadata), keine
     Schaetzung. Siehe https://ai.google.dev/gemini-api/docs/speech-generation."""
     inhalt = f"{sprechstil.strip()}\n\n{text}" if sprechstil else text
-    antwort = _neuer_client().models.generate_content(
-        model=modell,
-        contents=inhalt,
-        config=types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
-                )
+    antwort = _mit_retry(
+        lambda: _neuer_client().models.generate_content(
+            model=modell,
+            contents=inhalt,
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+                    )
+                ),
             ),
-        ),
+        )
     )
     teile = antwort.candidates[0].content.parts if antwort.candidates else None
     if not teile or teile[0].inline_data is None:

@@ -61,6 +61,78 @@ class GeminiClientTests(unittest.TestCase):
         config = client.models.generate_content.call_args.kwargs["config"]
         self.assertEqual(config.response_modalities, ["AUDIO"])
 
+    def test_503_wird_wiederholt_und_gelingt_dann(self):
+        from google.genai import errors as genai_errors
+        from gemini_client import GeminiModell
+
+        client = MagicMock()
+        ueberlastet = genai_errors.ServerError(
+            503, {"error": {"message": "high demand", "status": "UNAVAILABLE"}}
+        )
+        erwartet = MagicMock(text="Antwort")
+        client.models.generate_content.side_effect = [ueberlastet, ueberlastet, erwartet]
+        modell = GeminiModell("test-modell", client=client)
+
+        with patch("gemini_client.time.sleep") as schlaf:
+            antwort = modell.generate_content("Prompt")
+
+        self.assertIs(antwort, erwartet)
+        self.assertEqual(client.models.generate_content.call_count, 3)
+        self.assertEqual(schlaf.call_count, 2)
+
+    def test_429_wird_wie_503_behandelt(self):
+        from google.genai import errors as genai_errors
+        from gemini_client import GeminiModell
+
+        client = MagicMock()
+        rate_limit = genai_errors.ClientError(
+            429, {"error": {"message": "rate limited", "status": "RESOURCE_EXHAUSTED"}}
+        )
+        erwartet = MagicMock(text="Antwort")
+        client.models.generate_content.side_effect = [rate_limit, erwartet]
+        modell = GeminiModell("test-modell", client=client)
+
+        with patch("gemini_client.time.sleep"):
+            antwort = modell.generate_content("Prompt")
+
+        self.assertIs(antwort, erwartet)
+        self.assertEqual(client.models.generate_content.call_count, 2)
+
+    def test_dauerhafter_fehler_wird_sofort_durchgereicht(self):
+        from google.genai import errors as genai_errors
+        from gemini_client import GeminiModell
+
+        client = MagicMock()
+        ungueltig = genai_errors.ClientError(
+            400, {"error": {"message": "bad request", "status": "INVALID_ARGUMENT"}}
+        )
+        client.models.generate_content.side_effect = ungueltig
+        modell = GeminiModell("test-modell", client=client)
+
+        with patch("gemini_client.time.sleep") as schlaf:
+            with self.assertRaises(genai_errors.ClientError):
+                modell.generate_content("Prompt")
+
+        self.assertEqual(client.models.generate_content.call_count, 1)
+        schlaf.assert_not_called()
+
+    def test_transienter_fehler_wirft_nach_letztem_versuch(self):
+        from google.genai import errors as genai_errors
+        from gemini_client import GeminiModell, RETRY_VERSUCHE
+
+        client = MagicMock()
+        ueberlastet = genai_errors.ServerError(
+            503, {"error": {"message": "high demand", "status": "UNAVAILABLE"}}
+        )
+        client.models.generate_content.side_effect = ueberlastet
+        modell = GeminiModell("test-modell", client=client)
+
+        with patch("gemini_client.time.sleep"):
+            with self.assertRaises(genai_errors.ServerError):
+                modell.generate_content("Prompt")
+
+        self.assertEqual(client.models.generate_content.call_count, RETRY_VERSUCHE)
+
     def test_tts_stellt_sprechstilanweisung_vor_den_text(self):
         from gemini_client import erzeuge_tts_audio
 

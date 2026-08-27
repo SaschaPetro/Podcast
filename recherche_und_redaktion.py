@@ -84,7 +84,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
-CHAT_MODEL = modelle.modell_fuer("recherche_auswahl")
+CHAT_MODEL_KETTE = modelle.modell_kette_fuer("recherche_auswahl")
 MAX_ALTER_TAGE = 3
 MAX_ZURUECKSTELLUNG_TAGE = 3
 GUELTIGE_STATUS = {"akzeptiert", "abgelehnt", "zurueckgestellt"}
@@ -104,7 +104,7 @@ def hole_supabase_client():
 
 
 def hole_chat_model():
-    return GeminiModell(CHAT_MODEL)
+    return GeminiModell(CHAT_MODEL_KETTE)
 
 
 def baue_systemkontext(fokus_beschreibung: str, zusatz_anweisung: str | None) -> str:
@@ -177,7 +177,7 @@ def waehle_relevante_nachrichten(
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=chat_model.aktuelles_modell,
         schritt="recherche_auswahl",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,
@@ -374,7 +374,7 @@ def entscheide_ueber_vorschlaege(
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=chat_model.aktuelles_modell,
         schritt="redaktion_entscheidung",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,
@@ -546,7 +546,7 @@ def entscheide_ueber_updates(
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=chat_model.aktuelles_modell,
         schritt="update_reaktivierung",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,
@@ -857,7 +857,7 @@ def pruefe_zweite_quelle(
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=chat_model.aktuelles_modell,
         schritt="zweite_quelle_pruefung",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,
@@ -1021,7 +1021,7 @@ def waehle_notfall_kandidaten(
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=chat_model.aktuelles_modell,
         schritt="notfall_auffuellung",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,

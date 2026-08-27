@@ -22,6 +22,45 @@ class ModellzuordnungTests(unittest.TestCase):
         with patch.dict(os.environ, {"GEMINI_FAST_MODEL": ""}):
             self.assertEqual(modelle.schnelles_modell(), modelle.STANDARD_SCHNELLES_MODELL)
 
+    def test_schnelle_kette_beginnt_mit_primaermodell_und_enthaelt_fallbacks(self):
+        import modelle
+
+        with patch.dict(os.environ, {"GEMINI_FAST_MODEL": ""}):
+            kette = modelle.schnelle_modell_kette()
+
+        self.assertEqual(kette[0], modelle.STANDARD_SCHNELLES_MODELL)
+        self.assertEqual(kette, modelle.FALLBACK_SCHNELLES_MODELL)
+
+    def test_qualitaets_kette_beginnt_mit_primaermodell_und_enthaelt_fallbacks(self):
+        import modelle
+
+        with patch.dict(os.environ, {"GEMINI_QUALITY_MODEL": ""}):
+            kette = modelle.qualitaets_modell_kette()
+
+        self.assertEqual(kette[0], modelle.STANDARD_QUALITAETS_MODELL)
+        self.assertEqual(kette, modelle.FALLBACK_QUALITAETS_MODELL)
+
+    def test_env_override_wird_primaer_verliert_aber_sicherheitsnetz_nicht(self):
+        import modelle
+
+        with patch.dict(os.environ, {"GEMINI_FAST_MODEL": "custom-modell"}):
+            kette = modelle.schnelle_modell_kette()
+
+        self.assertEqual(kette[0], "custom-modell")
+        # Rest der eingebauten Kette bleibt komplett erhalten, nur ohne Duplikat:
+        self.assertEqual(kette[1:], modelle.FALLBACK_SCHNELLES_MODELL)
+
+    def test_modell_kette_fuer_manuskript_nutzt_qualitaetskette(self):
+        import modelle
+
+        with patch.dict(os.environ, {"GEMINI_FAST_MODEL": "", "GEMINI_QUALITY_MODEL": ""}):
+            self.assertEqual(
+                modelle.modell_kette_fuer("manuskript_erstellung"), modelle.FALLBACK_QUALITAETS_MODELL
+            )
+            self.assertEqual(
+                modelle.modell_kette_fuer("faktencheck"), modelle.FALLBACK_SCHNELLES_MODELL
+            )
+
 
 class GeminiClientTests(unittest.TestCase):
     def test_generate_content_nutzt_neue_client_schnittstelle(self):
@@ -132,6 +171,48 @@ class GeminiClientTests(unittest.TestCase):
                 modell.generate_content("Prompt")
 
         self.assertEqual(client.models.generate_content.call_count, RETRY_VERSUCHE)
+
+    def test_kette_wechselt_zu_naechstem_modell_nach_erschoepftem_retry(self):
+        from google.genai import errors as genai_errors
+        from gemini_client import GeminiModell, RETRY_VERSUCHE
+
+        client = MagicMock()
+        ueberlastet = genai_errors.ServerError(
+            503, {"error": {"message": "high demand", "status": "UNAVAILABLE"}}
+        )
+        erwartet = MagicMock(text="Antwort von Modell 2")
+        client.models.generate_content.side_effect = [ueberlastet] * RETRY_VERSUCHE + [erwartet]
+        modell = GeminiModell(["modell-1", "modell-2"], client=client)
+
+        with patch("gemini_client.time.sleep"):
+            antwort = modell.generate_content("Prompt")
+
+        self.assertIs(antwort, erwartet)
+        self.assertEqual(modell.aktuelles_modell, "modell-2")
+        self.assertEqual(client.models.generate_content.call_count, RETRY_VERSUCHE + 1)
+        verwendete_modelle = [
+            c.kwargs["model"] for c in client.models.generate_content.call_args_list
+        ]
+        self.assertEqual(verwendete_modelle, ["modell-1"] * RETRY_VERSUCHE + ["modell-2"])
+
+    def test_kette_komplett_erschoepft_wirft_letzten_fehler(self):
+        from google.genai import errors as genai_errors
+        from gemini_client import GeminiModell
+
+        client = MagicMock()
+        nicht_gefunden = genai_errors.ClientError(
+            404, {"error": {"message": "model not found", "status": "NOT_FOUND"}}
+        )
+        client.models.generate_content.side_effect = nicht_gefunden
+        modell = GeminiModell(["modell-1", "modell-2"], client=client)
+
+        with patch("gemini_client.time.sleep"):
+            with self.assertRaises(genai_errors.ClientError):
+                modell.generate_content("Prompt")
+
+        # 404 ist nicht transient (_ist_transienter_fehler) -> je genau 1 Versuch pro Modell
+        self.assertEqual(client.models.generate_content.call_count, 2)
+        self.assertIsNone(modell.aktuelles_modell)
 
     def test_tts_stellt_sprechstilanweisung_vor_den_text(self):
         from gemini_client import erzeuge_tts_audio
@@ -343,6 +424,70 @@ class TtsTests(unittest.TestCase):
             lauf_id=None,
             episode_id=None,
         )
+
+    def test_gemini_tts_fehlschlag_faellt_automatisch_auf_deepgram_zurueck(self):
+        import io
+        from contextlib import redirect_stdout
+
+        supabase = MagicMock()
+        with (
+            patch.object(self.audio, "_via_gemini_tts", side_effect=RuntimeError("Kontingent erschöpft")),
+            patch.object(self.audio, "_via_deepgram") as deepgram,
+            patch.object(self.audio, "hole_supabase_client", return_value=supabase),
+            patch.object(self.audio.kosten_tracking, "logge_api_kosten") as logge_kosten,
+        ):
+            ausgabe = io.StringIO()
+            with redirect_stdout(ausgabe):
+                self.audio.text_zu_audio("Text", "episode.mp3")
+
+        deepgram.assert_called_once()
+        self.assertIn("WARNUNG", ausgabe.getvalue())
+        self.assertIn("gemini_tts", ausgabe.getvalue())
+        logge_kosten.assert_called_once_with(
+            supabase,
+            dienst="deepgram",
+            modell=self.audio.DEEPGRAM_MODEL,
+            schritt="audio_synthese",
+            einheit_typ="zeichen",
+            menge_input=len("Text"),
+            lauf_id=None,
+            episode_id=None,
+        )
+
+    def test_gemini_und_deepgram_fehlschlag_faellt_auf_elevenlabs_zurueck(self):
+        supabase = MagicMock()
+        with (
+            patch.object(self.audio, "_via_gemini_tts", side_effect=RuntimeError("Preview down")),
+            patch.object(self.audio, "_via_deepgram", side_effect=RuntimeError("Deepgram down")),
+            patch.object(self.audio, "_via_elevenlabs") as elevenlabs,
+            patch.object(self.audio, "hole_supabase_client", return_value=supabase),
+            patch.object(self.audio.kosten_tracking, "logge_api_kosten") as logge_kosten,
+        ):
+            self.audio.text_zu_audio("Text", "episode.mp3")
+
+        elevenlabs.assert_called_once()
+        logge_kosten.assert_called_once_with(
+            supabase,
+            dienst="elevenlabs",
+            modell=self.audio.ELEVENLABS_MODEL,
+            schritt="audio_synthese",
+            einheit_typ="zeichen",
+            menge_input=len("Text"),
+            lauf_id=None,
+            episode_id=None,
+        )
+
+    def test_alle_tts_anbieter_fehlgeschlagen_wirft_letzten_fehler(self):
+        with (
+            patch.object(self.audio, "_via_gemini_tts", side_effect=RuntimeError("Gemini down")),
+            patch.object(self.audio, "_via_deepgram", side_effect=RuntimeError("Deepgram down")),
+            patch.object(self.audio, "_via_elevenlabs", side_effect=RuntimeError("ElevenLabs down")),
+            patch.object(self.audio.kosten_tracking, "logge_api_kosten") as logge_kosten,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ElevenLabs down"):
+                self.audio.text_zu_audio("Text", "episode.mp3")
+
+        logge_kosten.assert_not_called()
 
 
 class OrchestrierungsTests(unittest.TestCase):

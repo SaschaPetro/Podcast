@@ -69,7 +69,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
-CHAT_MODEL = modelle.modell_fuer("rhetorik_pruefung")
+CHAT_MODEL_KETTE = modelle.modell_kette_fuer("rhetorik_pruefung")
 MINDEST_EPISODEN = 4
 
 
@@ -78,7 +78,7 @@ def hole_supabase_client():
 
 
 def hole_chat_model():
-    return GeminiModell(CHAT_MODEL)
+    return GeminiModell(CHAT_MODEL_KETTE)
 
 
 def hole_rhetorik_agent(supabase) -> dict:
@@ -225,7 +225,7 @@ def passe_manuskript_prompt_an(bewertung_id: str, lauf_id: str | None = None) ->
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=chat_model.aktuelles_modell,
         schritt="prompt_revision",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,
@@ -325,7 +325,7 @@ def pruefe_rhetorik(lauf_id: str | None = None) -> dict:
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=chat_model.aktuelles_modell,
         schritt="rhetorik_pruefung",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,

@@ -30,16 +30,26 @@ PREISTABELLE = {
         "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
         "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
         "gemini-embedding-001": {"input": 0.15, "output": 0.0},
-        # Standard-"schnelles Modell" seit 2026-08-26 (gemini-2.5-flash-lite
-        # wurde von Google fuer neue Nutzer abgeschaltet) - Preis NICHT
-        # verifiziert, bitte sobald bekannt durch den echten Wert ersetzen:
-        "gemini-3.5-flash-lite": {"input": 0.10, "output": 0.40},
+        # Standard-"schnelles Modell" seit 2026-08-26. Der fruehere Kommentar
+        # hier ("gemini-2.5-flash-lite wurde fuer neue Nutzer abgeschaltet")
+        # liess sich am 2026-08-27 gegen die aktuelle Preisseite NICHT mehr
+        # bestaetigen - Modell ist laut https://ai.google.dev/gemini-api/docs/models
+        # wieder regulaer als stabil+frei gelistet. Preis am 2026-08-27 gegen
+        # https://ai.google.dev/gemini-api/docs/pricing verifiziert und korrigiert
+        # (vorher 0.10/0.40 eingetragen, war falsch):
+        "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
         # UEBERGANGS-Qualitaetsmodell seit 2026-08-26 (gemini-2.5-pro
         # abgeschaltet, Nachfolger gemini-3.1-pro-preview braucht Billing,
-        # siehe modelle.py) - Preis NICHT verifiziert, nur aus einer
-        # Websuche (2026-08-26), unbedingt vor Produktiveinsatz gegen die
-        # offizielle Preisseite pruefen:
+        # siehe modelle.py) - Preis am 2026-08-27 gegen
+        # https://ai.google.dev/gemini-api/docs/pricing verifiziert (bestaetigt korrekt):
         "gemini-3.5-flash": {"input": 1.50, "output": 9.00},
+        # Fallback-Kette (modelle.py FALLBACK_SCHNELLES_MODELL/
+        # FALLBACK_QUALITAETS_MODELL) - Preise am 2026-08-27 gegen
+        # https://ai.google.dev/gemini-api/docs/pricing verifiziert:
+        "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50},
+        # Promo-Preis bis 2026-12-31, danach laut Preisseite 1.50/7.50:
+        "gemini-3.6-flash": {"input": 0.75, "output": 3.75},
+        "gemini-2.5-flash": {"input": 0.30, "output": 2.50},
     },
     "deepgram": {
         # USD pro 1 Mio. Zeichen (Aura-2 TTS)

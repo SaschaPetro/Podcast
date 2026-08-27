@@ -75,8 +75,8 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
-MANUSKRIPT_MODELL = modelle.modell_fuer("manuskript_erstellung")
-FAKTENCHECK_MODELL = modelle.modell_fuer("faktencheck")
+MANUSKRIPT_MODELL_KETTE = modelle.modell_kette_fuer("manuskript_erstellung")
+FAKTENCHECK_MODELL_KETTE = modelle.modell_kette_fuer("faktencheck")
 OFFENE_STATUS = ("neu", "in Verfolgung")
 MANUSKRIPT_ZIEL_MIN_WOERTER = 1400
 MANUSKRIPT_ZIEL_MAX_WOERTER = 1600
@@ -135,8 +135,8 @@ def hole_wochenende_daten(heute: datetime) -> tuple[str, str]:
     return samstag, sonntag
 
 
-def hole_chat_model(modellname: str = MANUSKRIPT_MODELL):
-    return GeminiModell(modellname)
+def hole_chat_model(modell: str | list[str] = MANUSKRIPT_MODELL_KETTE):
+    return GeminiModell(modell)
 
 
 def hole_moderator_persona(supabase) -> str:
@@ -537,7 +537,7 @@ def erstelle_manuskript(
         kosten_tracking.logge_api_kosten(
             supabase,
             dienst="gemini",
-            modell=MANUSKRIPT_MODELL,
+            modell=chat_model.aktuelles_modell,
             schritt="manuskript_erstellung",
             einheit_typ="tokens",
             menge_input=rohantwort.usage_metadata.prompt_token_count,
@@ -573,7 +573,7 @@ def erstelle_episode(
     zusatz_anweisung: str | None = None, format: str | None = None, lauf_id: str | None = None
 ) -> dict | None:
     supabase = hole_supabase_client()
-    chat_model = hole_chat_model(MANUSKRIPT_MODELL)
+    chat_model = hole_chat_model(MANUSKRIPT_MODELL_KETTE)
 
     heute = datetime.now(timezone.utc)
     aktives_format = bestimme_format(format, heute)
@@ -794,7 +794,7 @@ def pruefe_manuskript(
     if not themen:
         raise RuntimeError("Faktencheck ohne verwendete Themen nicht möglich.")
 
-    chat_model = hole_chat_model(FAKTENCHECK_MODELL)
+    chat_model = hole_chat_model(FAKTENCHECK_MODELL_KETTE)
 
     thema_ids = [t["id"] for t in themen]
     quellen_nach_thema = hole_quellen_fuer_themen(supabase, thema_ids)
@@ -814,7 +814,7 @@ def pruefe_manuskript(
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=FAKTENCHECK_MODELL,
+        modell=chat_model.aktuelles_modell,
         schritt="faktencheck",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,

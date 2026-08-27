@@ -29,11 +29,11 @@ load_dotenv()
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 EMBEDDING_MODEL_KURZ = "gemini-embedding-001"
 EMBEDDING_DIM = 768
-CHAT_MODEL = modelle.modell_fuer("neuigkeit_pruefung")
+CHAT_MODEL_KETTE = modelle.modell_kette_fuer("neuigkeit_pruefung")
 SCHWELLENWERT = 0.85
 
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-chat_model = GeminiModell(CHAT_MODEL)
+chat_model = GeminiModell(CHAT_MODEL_KETTE)
 
 
 def erzeuge_embedding(text: str, lauf_id: str | None = None) -> list[float]:
@@ -99,7 +99,7 @@ def pruefe_auf_neuigkeit(
     kosten_tracking.logge_api_kosten(
         supabase,
         dienst="gemini",
-        modell=CHAT_MODEL,
+        modell=chat_model.aktuelles_modell,
         schritt="neuigkeit_pruefung",
         einheit_typ="tokens",
         menge_input=antwort.usage_metadata.prompt_token_count,

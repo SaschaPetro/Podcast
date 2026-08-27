@@ -64,11 +64,26 @@ def _neuer_client():
 
 
 class GeminiModell:
-    """Bewahrt die bisherige generate_content-Schnittstelle intern kompatibel."""
+    """generate_content() nimmt zusaetzlich zum bestehenden Kurzzeit-Retry
+    (_mit_retry, gleiches Modell) eine zweite Schicht Modell-Fallback: `modell`
+    kann eine Kette (primaeres Modell + Ausweich-Modelle, siehe
+    modelle.schnelle_modell_kette()/qualitaets_modell_kette()) statt eines
+    einzelnen Modellnamens sein. Erschoepft der Kurzzeit-Retry sich fuer ein
+    Modell trotzdem (Kontingent, abgeschaltetes Modell, ...), wird automatisch
+    das naechste Modell der Kette probiert, bevor endgueltig aufgegeben wird -
+    damit legt ein einzelnes erschoepftes Kontingent nie die ganze Pipeline
+    lahm. `aktuelles_modell` zeigt nach einem erfolgreichen Call, welches
+    Modell tatsaechlich geantwortet hat (fuer Kosten-Logging o.ae.)."""
 
-    def __init__(self, modellname: str, client=None):
-        self.modellname = modellname
+    def __init__(self, modell: str | list[str], client=None):
+        self.modellkette = [modell] if isinstance(modell, str) else list(modell)
         self._client = client
+        self.aktuelles_modell: str | None = None
+
+    @property
+    def modellname(self) -> str:
+        """Rueckwaertskompatibel: das primaere (erste) Modell der Kette."""
+        return self.modellkette[0]
 
     @property
     def client(self):
@@ -78,11 +93,25 @@ class GeminiModell:
 
     def generate_content(self, prompt: str, generation_config: dict | None = None):
         config = types.GenerateContentConfig(**generation_config) if generation_config else None
-        return _mit_retry(
-            lambda: self.client.models.generate_content(
-                model=self.modellname, contents=prompt, config=config
-            )
-        )
+        letzter_fehler: Exception | None = None
+        for i, kandidat in enumerate(self.modellkette):
+            try:
+                antwort = _mit_retry(
+                    lambda kandidat=kandidat: self.client.models.generate_content(
+                        model=kandidat, contents=prompt, config=config
+                    )
+                )
+                self.aktuelles_modell = kandidat
+                return antwort
+            except Exception as e:
+                letzter_fehler = e
+                if i + 1 < len(self.modellkette):
+                    naechstes = self.modellkette[i + 1]
+                    print(
+                        f'WARNUNG: Modell "{kandidat}" nicht nutzbar '
+                        f"({type(e).__name__}: {e}), wechsle zu \"{naechstes}\"..."
+                    )
+        raise letzter_fehler
 
 
 def erzeuge_embedding(

@@ -83,6 +83,13 @@ GEMINI_TTS_MP3_BITRATE = 128  # kbps, gleicher Wert wie ELEVENLABS_MODEL-Output
 # empfohlenen Länge. Gleiche Chunking-Logik wie bei Deepgram (_teile_text).
 GEMINI_TTS_TEXT_LIMIT = 3000
 
+# Anbieter-Fallback-Kette: text_zu_audio() startet beim uebergebenen `anbieter`
+# und probiert danach der Reihe nach, was hier NACH diesem Anbieter kommt -
+# schlaegt Gemini TTS fehl (Kontingent, Preview-Modell down, API-Fehler), wird
+# automatisch Deepgram versucht, schlaegt auch das fehl, ElevenLabs. Ein
+# einzelner ausgefallener Anbieter legt damit nie mehr die ganze Episode lahm.
+TTS_FALLBACK_KETTE = ["gemini_tts", "deepgram", "elevenlabs"]
+
 
 def _unterstuetzt_speed(model: str) -> bool:
     return any(model.endswith(f"-{sprache}") for sprache in DEEPGRAM_SPEED_SPRACHEN)
@@ -307,6 +314,35 @@ def lade_audio_hoch(supabase, dateipfad: str, episode_id: str) -> str | None:
         return None
 
 
+def _ermittle_versuchsreihenfolge(anbieter: str) -> list[str]:
+    """Ab dem uebergebenen Anbieter, dann der Rest von TTS_FALLBACK_KETTE in
+    Reihenfolge - ruft man explizit mit anbieter="deepgram" auf, greift ab da
+    trotzdem noch der Absprung zu ElevenLabs. Ein Anbieter ausserhalb der
+    Kette (aktuell keiner) bekommt keinen Fallback."""
+    if anbieter in TTS_FALLBACK_KETTE:
+        start = TTS_FALLBACK_KETTE.index(anbieter)
+        return TTS_FALLBACK_KETTE[start:]
+    return [anbieter]
+
+
+def _erzeuge_audio_via(anbieter: str, text: str, dateipfad: str, speed: float):
+    """Erzeugt die Audiodatei über genau einen Anbieter (keine Fallback-Logik
+    hier). Gibt (modell, gemini_tts_tokens) zurück - gemini_tts_tokens ist
+    None außer bei "gemini_tts" (kein Output-Token-Konzept bei den anderen)."""
+    if anbieter == "deepgram":
+        _via_deepgram(text, dateipfad, speed=speed)
+        return DEEPGRAM_MODEL, None
+    if anbieter == "elevenlabs":
+        _via_elevenlabs(text, dateipfad)
+        return ELEVENLABS_MODEL, None
+    if anbieter == "gemini_tts":
+        gemini_tts_tokens = _via_gemini_tts(text, dateipfad)
+        return GEMINI_TTS_MODEL, gemini_tts_tokens
+    raise ValueError(
+        f'Unbekannter Anbieter "{anbieter}". Erlaubt: "deepgram", "elevenlabs", "gemini_tts".'
+    )
+
+
 def text_zu_audio(
     text: str,
     dateipfad: str,
@@ -315,21 +351,24 @@ def text_zu_audio(
     lauf_id: str | None = None,
     episode_id: str | None = None,
 ) -> str | None:
-    print(f'Erzeuge Audio über "{anbieter}" -> {dateipfad}')
+    kandidaten = _ermittle_versuchsreihenfolge(anbieter)
 
-    if anbieter == "deepgram":
-        _via_deepgram(text, dateipfad, speed=speed)
-        modell = DEEPGRAM_MODEL
-    elif anbieter == "elevenlabs":
-        _via_elevenlabs(text, dateipfad)
-        modell = ELEVENLABS_MODEL
-    elif anbieter == "gemini_tts":
-        gemini_tts_tokens = _via_gemini_tts(text, dateipfad)
-        modell = GEMINI_TTS_MODEL
+    letzter_fehler: Exception | None = None
+    for i, kandidat in enumerate(kandidaten):
+        print(f'Erzeuge Audio über "{kandidat}" -> {dateipfad}')
+        try:
+            modell, gemini_tts_tokens = _erzeuge_audio_via(kandidat, text, dateipfad, speed)
+            anbieter = kandidat
+            break
+        except Exception as e:
+            letzter_fehler = e
+            if i + 1 < len(kandidaten):
+                print(
+                    f'WARNUNG: TTS-Anbieter "{kandidat}" fehlgeschlagen '
+                    f'({type(e).__name__}: {e}), wechsle zu "{kandidaten[i + 1]}"...'
+                )
     else:
-        raise ValueError(
-            f'Unbekannter Anbieter "{anbieter}". Erlaubt: "deepgram", "elevenlabs", "gemini_tts".'
-        )
+        raise letzter_fehler
 
     if anbieter == "gemini_tts":
         # Gemini TTS wird pro Token abgerechnet (Text-Input UND Audio-Output),

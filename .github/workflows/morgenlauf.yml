@@ -4,14 +4,12 @@ name: Morgenlauf
 # 2/7. Setzt voraus, dass Takt 1 (sammellauf.py / sammellauf.yml) bereits
 # gelaufen ist und offene Themen hinterlassen hat.
 #
-# Aktuell NUR manuell ausloesbar (Button "Run workflow" im Actions-Tab).
-# Es gibt bewusst noch KEINEN automatischen Zeitplan - siehe den
-# auskommentierten "schedule"-Block unten sowie README Abschnitt 10
-# ("Automatisierung"), wie man ihn spaeter aktiviert.
+# Laeuft automatisch werktags per Zeitplan (siehe "schedule" unten) und
+# ist zusaetzlich manuell ausloesbar (Button "Run workflow" im Actions-Tab).
 "on":
   workflow_dispatch: {}
 
-  # Beispiel-Zeitplan: Start 07:45 Uhr lokaler Zeit (Sommerzeit/MESZ,
+  # Zeitplan: Start 07:45 Uhr lokaler Zeit (Sommerzeit/MESZ,
   # UTC+2) = 05:45 UTC, jeden Wochentag ("1-5" = Montag-Freitag). Laesst
   # 15 Minuten Puffer bis zu einer 8-Uhr-Deadline.
   #
@@ -30,10 +28,9 @@ name: Morgenlauf
   # ACHTUNG: Dieser Wert ist in UTC. Bei Wechsel auf Winterzeit (MEZ, ab
   # Ende Oktober) muss der Wert um 1 Stunde nach vorne verschoben werden
   # (05:45 -> 06:45 UTC), sonst verschiebt sich der reale Lauf-Zeitpunkt
-  # um eine Stunde. Details dazu in README Abschnitt 10. Zum Aktivieren
-  # einfach die beiden "#"-Zeilen unten entfernen und committen.
-  # schedule:
-  #   - cron: "45 5 * * 1-5"
+  # um eine Stunde. Details dazu in README Abschnitt 10.
+  schedule:
+    - cron: "45 5 * * 1-5"
 
 jobs:
   morgenlauf:

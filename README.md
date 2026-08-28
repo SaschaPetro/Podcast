@@ -4,19 +4,43 @@
 
 Die öffentliche Website ist unter **https://fruehschicht-ki.vercel.app** erreichbar.
 Sie bietet einen Audioplayer für die neueste Folge, ein responsives Episodenarchiv,
-einstellbare Wiedergabegeschwindigkeit und aufklappbare, direkt verlinkte
-Originalquellen für jede Episode. Die Quellen der neuesten Folge sind standardmäßig
-sichtbar. Die Website verwendet bewusst keine gegenderten Schreibweisen.
+einstellbare Wiedergabegeschwindigkeit, aufklappbare, direkt verlinkte
+Originalquellen für jede Episode sowie (seit 2026-08-27) die **echten Erzeugungskosten
+pro Folge** - öffentlich sichtbar im Player und in der Episodenliste. Die Quellen der
+neuesten Folge sind standardmäßig sichtbar. Die Website verwendet bewusst keine
+gegenderten Schreibweisen.
+
+**Kosten pro Folge sind bewusst der tatsächlich bezahlte Betrag, keine Schätzung:**
+`api/episoden.js` summiert `api_kosten.geschaetzte_kosten_usd` je Episode, schließt
+dabei aber `dienst IN ('gemini','gemini_tts')` aus - beide laufen aktuell komplett im
+kostenlosen Google-Kontingent (Stand 2026-08-27 gegen `ai.google.dev/gemini-api/docs/pricing`
+verifiziert), real bezahlt sind dafür $0. Zeigt eine Folge $0 ("Kostenlos erzeugt
+(Google-Kontingent)"), lief sie komplett über Gemini. Ein Betrag >$0 bedeutet echte,
+tatsächlich bezahlte Deepgram-/ElevenLabs-Kosten (alter Standard-Anbieter vor
+2026-08-26 bzw. TTS-Fallback) - der genaue $-Satz dafür ist weiterhin ein Richtwert aus
+`kosten_tracking.PREISTABELLE`, kein verifizierter Vertragstarif. Recherche-/
+Redaktionskosten aus Takt 1 (`sammellauf.py`) fließen nicht mit ein, da sie keiner
+einzelnen Folge fest zugeordnet sind (siehe Abschnitt 8 zu `episoden.kosten` für den
+Unterschied zur internen Kostenschätzung).
 
 Die Website liegt in `public/`. Vercel stellt sie statisch bereit; die Serverless
 Function `api/episoden.js` liest veröffentlichte Episoden mit `audio_url` sowie die
-zugehörigen Einträge aus `episoden_quellen` serverseitig aus Supabase. Dadurch gelangt
-der Supabase-Schlüssel nicht in den Browser. `server.mjs` stellt dieselbe Website und
-API für die lokale Entwicklung unter `http://localhost:4173` bereit.
+zugehörigen Einträge aus `episoden_quellen` und `api_kosten` serverseitig aus Supabase.
+Dadurch gelangt der Supabase-Schlüssel nicht in den Browser. `server.mjs` stellt
+dieselbe Website und API für die lokale Entwicklung unter `http://localhost:4173`
+bereit (`npm.cmd start`/`npm.cmd run dev`).
 
 Für das Deployment müssen im Vercel-Projekt die Environment Variables
 `SUPABASE_URL` und `SUPABASE_KEY` für Production, Preview und Development
 hinterlegt werden. Die lokale `.env` wird nicht hochgeladen.
+
+**Wichtig: Kein automatisches Deployment bei `git push`.** Das Vercel-Projekt ist
+(Stand 2026-08-27) nicht an GitHub für kontinuierliche Deploys angebunden - ein Push
+auf `main` allein aktualisiert die Live-Website **nicht**. Änderungen an `public/`,
+`api/episoden.js`, `vercel.json` oder `package.json` müssen nach dem Push zusätzlich
+explizit deployed werden (siehe unten). Zur Kontrolle: im Vercel-Dashboard oder per
+`npx.cmd vercel ls` prüfen, ob das neueste Deployment tatsächlich den letzten Commit
+widerspiegelt.
 
 Lokale Entwicklung ohne Vercel CLI:
 
@@ -56,6 +80,9 @@ flowchart TD
         VOR --> RED["Redaktions-Agent<br/>Redaktion KMU"]
         RED -->|recherche_und_redaktion.py redaktion| ENT[("redaktion_entscheidungen")]
 
+        ENT -->|"fuehre_notfall_auffuellung_aus()<br/>nur wenn &lt;5 offene Themen"| NOTFALL["Notfall-Auffüllung<br/>zurückgestellte/abgelehnte<br/>Vorschläge erneut prüfen"]
+        NOTFALL -.->|"bei Eignung: akzeptiert"| ENT
+
         ENT -->|"verarbeite_akzeptierte_entscheidungen()<br/>Embedding + Ähnlichkeitssuche"| THE[("themen<br/>+ themen_updates")]
         THE -->|"nur bei NEUEM Thema<br/>(spart Kosten)"| ZQ["Zweite-Quelle-Check<br/>Tavily/Exa-Suche + Gemini"]
         ZQ -.->|"zweite_quelle_bestaetigt/-url/<br/>-einschaetzung"| THE
@@ -67,7 +94,7 @@ flowchart TD
         EP -.->|"Original-Quellen der<br/>verwendeten Themen"| EQ[("episoden_quellen")]
 
         EP -->|"pruefe_manuskript()<br/>gegen Original-Quellen"| FC{"Faktencheck<br/>Widerspruch?"}
-        FC -->|nein: freigegeben| TTS["Text-to-Speech<br/>Gemini TTS (Standard) / Deepgram / ElevenLabs"]
+        FC -->|nein: freigegeben| TTS["Text-to-Speech<br/>Anbieter-Kette: Gemini TTS → Deepgram → ElevenLabs<br/>(automatischer Fallback bei Fehler)"]
         FC -->|ja: pruefung_fehlgeschlagen| STOP["Audio übersprungen,<br/>manuelle Prüfung nötig"]
         TTS --> MP3["output/episode_&lt;id&gt;.mp3"]
         MP3 -.->|audio_pfad| EP
@@ -81,9 +108,11 @@ flowchart TD
 
 **Zwei getrennte Takte, architektonisch als eigene Skripte/Workflows getrennt** (`sammellauf.py`/`sammellauf.yml` und `morgenlauf.py`/`morgenlauf.yml`, gemeinsame Infrastruktur in `pipeline_utils.py`), damit das zeitunkritische Sammeln unabhängig vom zeitkritischen Morgenlauf getaktet und überwacht werden kann:
 
-**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat) - entsteht dabei ein neues Thema, sucht zusätzlich eine Zweite-Quelle-Verifikation (Tavily/Exa + Gemini) nach unabhängiger Bestätigung des Kernfakts. **Damit endet Takt 1** - `sammellauf.py` schreibt nie in `episoden`.
+**Kurz in Worten:** RSS-Feeds werden roh in `rohnachrichten` gespeichert. Jeder der drei Recherche-Agenten sucht sich daraus 3-5 für seinen Fokus relevante Nachrichten und legt sie als Vorschlag ab. Der Redaktions-Agent sieht alle offenen Vorschläge aller Recherche-Agenten und akzeptiert 4-6 davon. Bleiben danach weniger als `MIN_THEMEN_FUER_EPISODE` (5) offene Themen übrig, greift die **Notfall-Auffüllung** (`fuehre_notfall_auffuellung_aus()`, Schritt 4/6): sie lässt zuerst zurückgestellte, danach notfalls auch bereits abgelehnte Vorschläge mit gelockertem Relevanz-Maßstab erneut prüfen - Duplikate, Gerüchte und faktisch unbelegte Meldungen bleiben dabei weiterhin ausgeschlossen. Akzeptierte Entscheidungen werden per Embedding-Ähnlichkeitssuche einem Thema zugeordnet (neues Thema, Update zu bestehendem Thema, oder Duplikat) - entsteht dabei ein neues Thema, sucht zusätzlich eine Zweite-Quelle-Verifikation (Tavily/Exa + Gemini) nach unabhängiger Bestätigung des Kernfakts. **Damit endet Takt 1** - `sammellauf.py` schreibt nie in `episoden`.
 
 **Takt 2** setzt auf den vorbereiteten offenen Themen auf: Der Moderator wählt aus allen offenen Themen die 5-6 wichtigsten aus und schreibt ein nachrichtenorientiertes Manuskript; die dabei verwendeten Original-Quellen werden dauerhaft in `episoden_quellen` festgehalten. Der Zielbereich liegt bei 1400-1600 Wörtern. Unter 1350 Wörtern wird der vollständige Entwurf genau einmal gezielt überarbeitet; danach wird der Lauf abgebrochen, statt weitere teure Vollgenerierungen auszulösen. Bevor daraus Audio erzeugt wird, prüft ein Faktencheck-Schritt das Manuskript gegen die Original-Quellen. Widersprüche, unbelegte Tatsachenbehauptungen und fehlende Originalquellen blockieren die Vertonung. Die TTS-Ausgabe wird erst nach erfolgreicher Erzeugung aller Blöcke atomar veröffentlicht. Als allererste Zeile im Manuskript steht immer ein fester KI-Kennzeichnungshinweis (siehe Abschnitt 6). Die fertige MP3 wird lokal gespeichert und zusätzlich in einen öffentlichen Supabase-Storage-Bucket hochgeladen. Unabhängig davon prüft alle 4 Episoden ein Rhetorik-Agent die zuletzt erschienenen Manuskripte.
+
+**Resilienz gegen API-Ausfälle (beide Takte):** Jeder Gemini-Textaufruf läuft über `gemini_client.GeminiModell` und ist zweifach abgesichert - Kurzzeit-Retry mit Backoff bei 503/429 auf demselben Modell, danach automatischer Wechsel auf das nächste Modell einer Fallback-Kette (`modelle.py`, siehe Abschnitt 7), bevor der Schritt tatsächlich fehlschlägt. Die TTS-Erzeugung ist genauso mehrstufig abgesichert (Gemini TTS → Deepgram → ElevenLabs, siehe oben). Details, wann welcher Mechanismus greift: Abschnitt 11 ("Fehler-Matrix").
 
 ## 3. Die KI-Agenten
 
@@ -292,6 +321,8 @@ Der aktive Basisprompt wird aus `manuskript_prompt_versionen` geladen. `baue_man
 
 **Technische Längensicherung:** `erstelle_manuskript()` zählt die tatsächlich ausgegebenen Wörter ohne die abschließende Themen-ID-Zeile. Liegt ein Entwurf unter 1350 Wörtern, erhält genau ein weiterer Modellaufruf den vollständigen bisherigen Entwurf sowie die ursprünglichen Themen als Arbeitsgrundlage. Zusätzlich wird die genaue Differenz bis zum Ziel von 1400 Wörtern genannt; erweitert werden darf nur durch belegte journalistische Substanz. Für jeden Versuch sind bis zu 8192 Output-Tokens freigegeben. Bleibt auch der zweite Entwurf zu kurz, löst die Funktion einen Fehler aus; die Episode wird nicht vertont.
 
+**`MANUSKRIPT_THINKING_BUDGET = 0` (wichtig, sonst bricht das Manuskript ab):** `gemini-3.5-flash` denkt standardmäßig unsichtbar nach ("thinking"), und diese Tokens zählen gegen dasselbe 8192-Output-Budget wie der sichtbare Text. Live beobachtet (2026-08-27): ~7861 von 8192 Tokens gingen ins Denken, nur 327 blieben für den sichtbaren Text übrig (`finish_reason=MAX_TOKENS`, Manuskript brach nach einem Satz ab - unabhängig von der Zahl verfügbarer Themen). Mit `thinking_budget=0` lieferte derselbe Prompt in einem Versuch ein vollständiges, natürlich beendetes Manuskript (`finish_reason=STOP`, 1603 Wörter). Journalistisches Zusammenfassen braucht kein internes Schritt-für-Schritt-Denken - das Budget geht deshalb komplett in den sichtbaren Text.
+
 Am Ende des Prompts wird die KI zusätzlich angewiesen, als letzte Zeile `VERWENDETE_THEMEN_IDS: <id1>,<id2>,...` zurückzugeben. Diese Zeile wird von `erstelle_manuskript` per Regex herausgeschnitten (landet NICHT im gespeicherten `manuskripttext`) und dient nur dazu, die verwendeten Themen korrekt auf Status `gesendet` zu setzen.
 
 ## 7. Setup / Wie man das Projekt zum Laufen bringt
@@ -308,7 +339,9 @@ TAVILY_API_KEY=
 EXA_API_KEY=
 ```
 
-Die Modellzuordnung liegt zentral in `modelle.py`. Standardmäßig verwendet die Pipeline `gemini-2.5-flash-lite` für häufige Auswahl-, Klassifikations-, Neuigkeits- und Prüfschritte. Ausschließlich die Manuskripterstellung nutzt `gemini-2.5-pro`. Optional überschreiben `GEMINI_FAST_MODEL` und `GEMINI_QUALITY_MODEL` diese stabilen Standardnamen; GitHub Actions liest sie als Repository-Variablen. API-Schlüssel bleiben ausschließlich Secrets. (`GEMINI_MODEL_NAME` ist veraltet und wird von keinem Skript mehr gelesen - beide Workflow-Dateien setzen bereits `GEMINI_FAST_MODEL`/`GEMINI_QUALITY_MODEL`.)
+Die Modellzuordnung liegt zentral in `modelle.py`. Standardmäßig verwendet die Pipeline `gemini-3.5-flash-lite` für häufige Auswahl-, Klassifikations-, Neuigkeits- und Prüfschritte. Ausschließlich die Manuskripterstellung nutzt `gemini-3.5-flash` (Übergangslösung, siehe Kommentar in `modelle.py`: `gemini-2.5-pro` ist für neue Nutzer abgeschaltet, der Nachfolger `gemini-3.1-pro-preview` braucht Billing). Optional überschreiben `GEMINI_FAST_MODEL` und `GEMINI_QUALITY_MODEL` diese Standardnamen; GitHub Actions liest sie als Repository-Variablen. API-Schlüssel bleiben ausschließlich Secrets. (`GEMINI_MODEL_NAME` ist veraltet und wird von keinem Skript mehr gelesen - beide Workflow-Dateien setzen bereits `GEMINI_FAST_MODEL`/`GEMINI_QUALITY_MODEL`.)
+
+**Jedes Modell ist seit 2026-08-27 der Anfang einer Fallback-Kette, kein Einzelmodell mehr:** `modelle.schnelle_modell_kette()`/`qualitaets_modell_kette()` stellen den (ggf. per Env-Var übersteuerten) Standard an Position 1 vor `FALLBACK_SCHNELLES_MODELL` (`gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-2.5-flash-lite`) bzw. `FALLBACK_QUALITAETS_MODELL` (`gemini-3.5-flash → gemini-3.6-flash → gemini-2.5-flash`) in `modelle.py`. Ein Env-Override ersetzt also nur den ersten Eintrag, das eingebaute Sicherheitsnetz bleibt dahinter erhalten. `GeminiModell.generate_content()` (`gemini_client.py`) wechselt automatisch zum nächsten Modell der Kette, sobald der Kurzzeit-Retry für das aktuelle Modell scheitert (429 Kontingent, 404 abgeschaltetes Modell, o.ä.) - alle Ketten-Kandidaten sind gegen `ai.google.dev/gemini-api/docs/pricing` als aktuell frei+stabil verifiziert (Stand 2026-08-27), `gemini-2.0-flash-lite` z.B. bewusst NICHT enthalten (laut Modell-Seite shut down). Das Embedding-Modell (`gemini-embedding-001`) ist bewusst von diesem Fallback ausgenommen - ein anderes Embedding-Modell würde einen anderen, nicht vergleichbaren Vektorraum erzeugen und die Themen-Ähnlichkeitssuche leise verfälschen statt sauber zu scheitern. Details: Abschnitt 11 ("Fehler-Matrix").
 
 `GEMINI_API_KEY` deckt seit der Umstellung auf Gemini TTS als Standard-Audio-Anbieter (siehe Abschnitt 8) zusätzlich die Audio-Synthese ab - nicht mehr nur Text/Embeddings. Die MP3-Konvertierung dafür läuft über die reine Python-Bibliothek `lameenc` (in `requirements.txt`), kein separates ffmpeg-Setup nötig.
 
@@ -411,15 +444,15 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 *Detailliertes Fehlerverhalten pro Komponente: siehe Abschnitt 11 ("Fehler-Matrix").*
 
 - **Row Level Security ist aktuell deaktiviert** - keine der Tabellen hat RLS-Policies. Der Code verwendet direkt den Supabase-Service-Key; dieser Key darf niemals client-seitig (Browser, App) verwendet werden.
-- **Gemini TTS ist seit 2026-08-26 der Standard-Audio-Anbieter** (`anbieter="gemini_tts"`, `gemini-3.1-flash-tts-preview`, Stimme `Charon`). Deepgram bleibt als Fallback vollständig erhalten (`anbieter="deepgram"` explizit übergeben, z.B. in `morgenlauf.py` über `AUDIO_ANBIETER` umstellen). Gemini TTS liefert rohes PCM, keine MP3-Daten - `_via_gemini_tts()` konvertiert das komplett im Speicher über die reine Python-Bibliothek `lameenc` zu MP3 (128 kbps), es entsteht nie eine WAV-Zwischendatei auf der Platte. `lameenc` wurde bewusst statt ffmpeg/pydub gewählt: ffmpeg ist weder auf dem GitHub-Actions-`ubuntu-latest`-Runner noch lokal vorinstalliert (Stand 2026-08-26 geprüft), `lameenc` dagegen ist ein vorkompiliertes Python-Wheel ohne System-Abhängigkeit. **Schlägt die MP3-Konvertierung fehl** (z.B. defekte/leere PCM-Daten von der API), wirft `_via_gemini_tts()` die Exception ungefangen weiter - Schritt 3/4 wird "fehlgeschlagen", es wird **keine** Datei geschrieben (auch keine WAV-Notlösung), `episoden.audio_pfad`/`audio_url` bleiben `NULL`. Kein automatischer Fallback auf Deepgram - das müsste für den jeweiligen Lauf manuell nachgeholt werden (siehe Abschnitt 11).
+- **Gemini TTS ist seit 2026-08-26 der Standard-Audio-Anbieter** (`anbieter="gemini_tts"`, `gemini-3.1-flash-tts-preview`, Stimme `Charon`, seit 2026-08-27 mit Sprechstil-Regieanweisung `GEMINI_TTS_SPRECHSTIL` - motiviert/engagiert, aber seriös genug fürs Nachrichtenformat). Gemini TTS liefert rohes PCM, keine MP3-Daten - `_via_gemini_tts()` konvertiert das komplett im Speicher über die reine Python-Bibliothek `lameenc` zu MP3 (128 kbps), es entsteht nie eine WAV-Zwischendatei auf der Platte. `lameenc` wurde bewusst statt ffmpeg/pydub gewählt: ffmpeg ist weder auf dem GitHub-Actions-`ubuntu-latest`-Runner noch lokal vorinstalliert (Stand 2026-08-26 geprüft), `lameenc` dagegen ist ein vorkompiliertes Python-Wheel ohne System-Abhängigkeit. **Seit 2026-08-27 automatischer Fallback bei jedem Fehler** (Kontingent, Preview-Modell down, API-Fehler, **auch** eine fehlgeschlagene MP3-Konvertierung): `text_zu_audio()` probiert die Anbieter-Kette `TTS_FALLBACK_KETTE` (`gemini_tts → deepgram → elevenlabs`) automatisch der Reihe nach durch, kein manuelles Nachholen mehr nötig. Erst wenn auch der letzte Anbieter der Kette scheitert, wird Schritt 3/4 "fehlgeschlagen" und `episoden.audio_pfad`/`audio_url` bleiben `NULL` (`_schreibe_atomar()` schreibt weiterhin nur nach vollständiger Erzeugung). Details: Abschnitt 11.
 - **Kein festes Zeichenlimit für Gemini TTS dokumentiert**, aber ein Kontextfenster von 32k Tokens sowie Googles Hinweis, dass die Sprachqualität bei durchgehenden Ausgaben über wenigen Minuten driften kann - deshalb dieselbe Chunking-Logik wie bei Deepgram (`_teile_text`, Grenze `GEMINI_TTS_TEXT_LIMIT = 3000` Zeichen ≈ 2-3 Min. Audio).
 - **Deepgram-Speed-Control (Fallback-Anbieter) funktioniert nur bei englischen Aura-2-Stimmen** (`DEEPGRAM_SPEED_SPRACHEN = ("en",)`). Das deutsche Standardmodell `aura-2-julius-de` lehnt Anfragen mit `speed`-Parameter komplett ab (400 Bad Request) - der Code umgeht das automatisch, indem er `speed` bei deutschen Stimmen weglässt.
 - **Deepgram hat ein Limit von 2000 Zeichen pro Anfrage.** Längere Manuskripte werden automatisch an Satzgrenzen in Chunks aufgeteilt (`_teile_text`) und die Audio-Teile zusammengefügt.
-- **ElevenLabs-Kontingent ist begrenzt** - nur über explizites `anbieter="elevenlabs"` nutzbar, kein Standard- und kein Fallback-Anbieter.
+- **ElevenLabs-Kontingent ist begrenzt** - seit 2026-08-27 dritte (letzte) Stufe der automatischen TTS-Fallback-Kette (siehe oben), zusätzlich weiterhin über explizites `anbieter="elevenlabs"` direkt ansteuerbar. Der hinterlegte Preis in `kosten_tracking.PREISTABELLE` ist nur ein grober Richtwert, nicht der tatsächlich gebuchte Tarif (siehe Abschnitt darunter zu Kosten).
 - **Gemini-SDK:** Die Pipeline verwendet das aktuelle GA-Paket `google-genai` über die zentrale Adapter-Schicht `gemini_client.py`. Textgenerierung, strukturierte JSON-Ausgaben, Embeddings und Tokenzählung laufen über einen expliziten `genai.Client`; das eingestellte Paket `google-generativeai` wird nicht mehr importiert.
-- **Noch kein automatischer Zeitplan, aber zwei manuelle GitHub-Actions-Trigger** - die Pipeline ist in zwei Takte getrennt (siehe Abschnitt 2): `sammellauf.py` (RSS bis Themenpflege, 6 Schritte) und `morgenlauf.py` (Manuskript bis Rhetorik-Prüfung, 4 Schritte), jeweils mit eigenem Workflow (`.github/workflows/sammellauf.yml` bzw. `morgenlauf.yml`), der sich per Knopfdruck im GitHub-Actions-Tab starten lässt, zusätzlich weiterhin lokal per `python sammellauf.py`/`python morgenlauf.py` (siehe Abschnitt 10). Ein automatischer Cron-Zeitplan ist nur im `morgenlauf.yml`-Workflow vorbereitet, aber bewusst auskommentiert - es gibt also aktuell keinen zeitgesteuerten Trigger für keinen der beiden Workflows, nur den manuellen. `morgenlauf.py` setzt voraus, dass `sammellauf.py` vorher gelaufen ist und offene Themen hinterlassen hat - läuft es ohne, entsteht einfach keine Episode (kein Fehler, siehe Abschnitt 11).
+- **Automatischer Zeitplan seit 2026-08-28, zusätzlich weiterhin manuelle GitHub-Actions-Trigger** - die Pipeline ist in zwei Takte getrennt (siehe Abschnitt 2): `sammellauf.py` (RSS bis Themenpflege, 6 Schritte, Cron 6:45 Uhr lokal) und `morgenlauf.py` (Manuskript bis Rhetorik-Prüfung, 4 Schritte, Cron 7:45 Uhr lokal), jeweils mit eigenem Workflow (`.github/workflows/sammellauf.yml` bzw. `morgenlauf.yml`) und eigenem `schedule`-Cron (siehe Abschnitt 10), zusätzlich weiterhin per Knopfdruck im GitHub-Actions-Tab oder lokal per `python sammellauf.py`/`python morgenlauf.py` auslösbar. `morgenlauf.py` setzt voraus, dass `sammellauf.py` vorher gelaufen ist und offene Themen hinterlassen hat - deshalb liegt dessen Cron eine Stunde davor. Schlägt der Sammellauf an einem Tag fehl oder läuft er aus anderem Grund nicht rechtzeitig durch, entsteht an diesem Tag trotzdem einfach keine Episode (kein Fehler, siehe Abschnitt 11) statt eines Workflow-Fehlers im Morgenlauf.
 - **Themen-Markierung ist konservativ:** Liefert die Moderator-KI keine gültige `VERWENDETE_THEMEN_IDS`-Zeile, wird sicherheitshalber **kein** Thema als "gesendet" markiert (Warnung in der Konsole) - besser als fälschlich Themen zu verlieren, kann aber dazu führen, dass Themen manuell nachgepflegt werden müssen.
-- **`episoden.kosten` wird befüllt, aber nur bei einem kompletten `morgenlauf.py`-Durchlauf** - `kosten_tracking.py` loggt jeden Gemini-/Deepgram-/ElevenLabs-Aufruf in `api_kosten`; die Summe pro Episode wird aber erst am Ende von `morgenlauf.py` gebildet und in `episoden.kosten` geschrieben. Wird `erstelle_episode()` standalone aufgerufen (siehe Abschnitt 3), bleibt `episoden.kosten` leer, weil dieser Aggregationsschritt dort nicht mitläuft. Die Werte sind zudem Schätzungen auf Basis der manuell gepflegten Preistabelle in `kosten_tracking.py`, nicht die tatsächlich abgerechneten Anbieterkosten.
+- **`episoden.kosten` wird befüllt, aber nur bei einem kompletten `morgenlauf.py`-Durchlauf** - `kosten_tracking.py` loggt jeden Gemini-/Deepgram-/ElevenLabs-Aufruf in `api_kosten`; die Summe pro Episode wird aber erst am Ende von `morgenlauf.py` gebildet und in `episoden.kosten` geschrieben. Wird `erstelle_episode()` standalone aufgerufen (siehe Abschnitt 3), bleibt `episoden.kosten` leer, weil dieser Aggregationsschritt dort nicht mitläuft. Die Werte in `api_kosten.geschaetzte_kosten_usd` sind Schätzungen auf Basis der manuell gepflegten Preistabelle in `kosten_tracking.py` (nützlich für die interne Planung, z.B. "was würde das im Bezahltarif kosten") - **nicht** die tatsächlich abgerechneten Anbieterkosten. Die öffentliche Website (`api/episoden.js`) berechnet die Kosten pro Folge deshalb bewusst anders und **nicht** aus `episoden.kosten`: sie summiert `api_kosten` direkt bei jedem Request, schließt dabei aber `dienst IN ('gemini','gemini_tts')` aus (aktuell komplett im kostenlosen Google-Kontingent, real bezahlt = $0, Stand 2026-08-27 gegen die Preisseite verifiziert) und zeigt nur echte, tatsächlich bezahlte Kosten (Deepgram/ElevenLabs). Siehe Website-Abschnitt ganz oben.
 - **`themen.quelle` wird aktuell nirgends befüllt.**
 - **Zweite-Quelle-Verifikation läuft nur für neu angelegte Themen, nicht rückwirkend.** Alt-Themen (vor Einführung dieses Features, oder aus Updates/Duplikaten) haben `zweite_quelle_bestaetigt = NULL` - das heißt nicht "nicht bestätigt", sondern "nie geprüft".
 - **Rhetorik-Prüfung ist rein informativ.** `pruefe_rhetorik()` ändert nie automatisch den Manuskript-Prompt (Abschnitt 6) oder bestehende Episoden - gefundene Kritikpunkte müssen manuell umgesetzt werden.
@@ -435,7 +468,9 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 | Manuskript länger/kürzer | Wortzahl-Konstanten + Prompt-Leitlinie | `MANUSKRIPT_ZIEL_*` und `MANUSKRIPT_HARTE_MIN_WOERTER` in `generiere_episode.py` |
 | Weniger/mehr Storytelling | Verbindliche Nachrichtenleitlinie | `baue_manuskript_prompt()` und aktive Version in `manuskript_prompt_versionen` |
 | Mehr/weniger Humor | Prompt in `generiere_episode.py` | Datei direkt, Abschnitt "HUMOR" |
-| Andere Stimme/Anbieter | `generiere_audio.py` | `anbieter`-Parameter (Standard `"gemini_tts"`, Fallback `"deepgram"`, außerdem `"elevenlabs"`), bzw. `GEMINI_TTS_VOICE`/`DEEPGRAM_MODEL`/`ELEVENLABS_VOICE_ID` |
+| Andere Stimme/Anbieter | `generiere_audio.py` | `anbieter`-Parameter (Standard `"gemini_tts"`), bzw. `GEMINI_TTS_VOICE`/`DEEPGRAM_MODEL`/`ELEVENLABS_VOICE_ID` |
+| Sprechstil/Tonalität der Stimme ändern | `GEMINI_TTS_SPRECHSTIL` | `generiere_audio.py` (Regieanweisung, die Gemini TTS vor den eigentlichen Text stellt) |
+| Reihenfolge/Umfang der TTS-Anbieter-Fallback-Kette ändern | `TTS_FALLBACK_KETTE` | `generiere_audio.py` (aktuell `gemini_tts → deepgram → elevenlabs`) |
 | Zurück auf Deepgram als Standard-Anbieter | `AUDIO_ANBIETER` | `morgenlauf.py` |
 | Mehr/weniger Themen pro Folge | Prompt in `generiere_episode.py` | Abschnitt "THEMENAUSWAHL" |
 | Montag-/Freitag-Sonderformat anpassen | `baue_format_hinweis` in `generiere_episode.py` | Datei direkt; zum Testen `format="montag"`/`"freitag"`/`"standard"` an `erstelle_episode` übergeben |
@@ -451,19 +486,22 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 | Wie alt Nachrichten maximal sein dürfen | `MAX_ALTER_TAGE` | `rss_einlesen.py` bzw. `recherche_und_redaktion.py` |
 | Sprechgeschwindigkeit der Audiodatei | `DEEPGRAM_SPEED_STANDARD` | `generiere_audio.py` (nur beim Deepgram-Fallback, dort auch nur bei englischen Stimmen - Gemini TTS hat keinen eigenen Speed-Parameter) |
 | Wie streng der Faktencheck prüft | Prompt-Text in `baue_faktencheck_prompt` | `generiere_episode.py` |
-| Welches Gemini-Modell für Text/Redaktion verwendet wird | `GEMINI_FAST_MODEL` (schnell) / `GEMINI_QUALITY_MODEL` (Manuskript) | `.env`, siehe `modelle.py` |
+| Welches Gemini-Modell für Text/Redaktion primär verwendet wird | `GEMINI_FAST_MODEL` (schnell) / `GEMINI_QUALITY_MODEL` (Manuskript) | `.env`, siehe `modelle.py` - ersetzt nur Position 1 der Fallback-Kette |
+| Fallback-Kette für Text-Modelle (Reihenfolge/Umfang) ändern | `FALLBACK_SCHNELLES_MODELL` / `FALLBACK_QUALITAETS_MODELL` | `modelle.py` |
+| Wie viele offene Themen die Notfall-Auffüllung mindestens sicherstellt | `MIN_THEMEN_FUER_EPISODE` (aktuell 5) | `recherche_und_redaktion.py` |
 | Wortlaut des KI-Kennzeichnungshinweises am Episoden-Anfang | `KI_KENNZEICHNUNG_SATZ` | `generiere_episode.py` |
 | Name des Supabase-Storage-Buckets fürs Audio-Upload | `AUDIO_BUCKET` | `generiere_audio.py` |
 | Worauf der Rhetorik-Agent achtet | `fokus_beschreibung` (Zeile `rolle='rhetorik'`) | Table Editor, `agenten_konfiguration` |
 | Wie oft die Rhetorik-Prüfung läuft (aktuell alle 4 Episoden) | `MINDEST_EPISODEN` | `rhetorik_check.py` |
 | Website-Texte oder Aufbau ändern | Statische Webdateien | `public/index.html`, `public/styles.css`, `public/app.js` |
 | Episoden/Quellen der Website ändern | Serverless API | `api/episoden.js` |
-| Website veröffentlichen | Vercel-Deployment | `npx.cmd vercel --prod` |
+| Website veröffentlichen (git push allein reicht NICHT) | Vercel-Deployment | `npx.cmd vercel --prod` |
+| Wie die Website "echte" von "geschätzten" Kosten unterscheidet | `dienst=not.in.(gemini,gemini_tts)`-Filter | `api/episoden.js`/`server.mjs` |
 | Wie viele Tavily/Exa-Treffer die Zweite-Quelle-Verifikation holt | `ZWEITE_QUELLE_MAX_TREFFER` | `recherche_und_redaktion.py` |
 
 ## 10. Automatisierung (GitHub Actions)
 
-**Aktueller Stand:** Beide Takte (siehe Abschnitt 2) lassen sich über GitHub Actions manuell anstoßen, ohne dass jemand lokal etwas ausführen muss - je ein eigener Workflow pro Skript: `.github/workflows/sammellauf.yml` (Takt 1) und `.github/workflows/morgenlauf.yml` (Takt 2). Beide reagieren aktuell **ausschließlich auf einen manuellen Klick** (`workflow_dispatch`) - es gibt bewusst noch **keinen** automatischen Zeitplan für keinen der beiden.
+**Aktueller Stand:** Beide Takte (siehe Abschnitt 2) laufen automatisch werktags per Zeitplan über GitHub Actions, ohne dass jemand lokal oder manuell etwas ausführen muss - je ein eigener Workflow pro Skript: `.github/workflows/sammellauf.yml` (Takt 1, 6:45 Uhr lokal) und `.github/workflows/morgenlauf.yml` (Takt 2, 7:45 Uhr lokal, eine Stunde später). Beide bleiben zusätzlich weiterhin über einen manuellen Klick (`workflow_dispatch`) auslösbar.
 
 **Manuell auslösen:**
 1. GitHub-Repo → Tab "Actions" → Workflow "Sammellauf" oder "Morgenlauf" in der linken Liste auswählen (für eine vollständige Episode: erst Sammellauf, dann - nach dessen Abschluss - Morgenlauf).
@@ -483,16 +521,21 @@ Läuft nur tatsächlich durch, wenn seit der letzten Prüfung mindestens 4 neue 
 
 Mit denselben Werten wie in der lokalen `.env` eintragen. Ohne `TAVILY_API_KEY`/`EXA_API_KEY` schlägt `sammellauf.py` nicht ab, die Zweite-Quelle-Verifikation wird für neue Themen nur übersprungen (Konsolen-Hinweis). Ohne die übrigen Secrets schlägt der jeweilige Lauf beim ersten API-Aufruf fehl. (`OPENAI_API_KEY` wird aktuell von keinem Pipeline-Schritt gelesen - nur von `test_apis.py`, das nicht Teil eines Workflows ist - und ist deshalb in keinem der beiden verdrahtet.)
 
-**Später: automatischen Zeitplan aktivieren.** Nur in `.github/workflows/morgenlauf.yml` steht im `on:`-Block ein auskommentierter `schedule`-Vorschlag (für `sammellauf.yml` gibt es aktuell noch keinen Vorschlag - Takt 1 ist nicht zeitkritisch, ein Zeitplan dafür ist bewusst noch offen) - "jeden Wochentag um 7:45 Uhr" (deutsche Zeit):
+**Aktive Zeitpläne.** Beide Workflows tragen ihren `schedule`-Block direkt im `on:`-Block:
 
 ```yaml
-# schedule:
-#   - cron: "45 5 * * 1-5"
+# sammellauf.yml
+schedule:
+  - cron: "45 4 * * 1-5"   # 6:45 Uhr lokal (MESZ)
+
+# morgenlauf.yml
+schedule:
+  - cron: "45 5 * * 1-5"   # 7:45 Uhr lokal (MESZ)
 ```
 
 **Laufzeit-Hinweis:** Ein früher gemessener Morgenlauf dauerte 133 Sekunden, basierte aber nur auf einem 4485 Zeichen beziehungsweise rund 591 Wörter langen Manuskript und ist deshalb für den aktuellen Zehn-Minuten-Standard nicht repräsentativ. Neue Manuskripte zielen auf 1400-1600 Wörter; bei einem zu kurzen ersten Entwurf kann genau ein zweiter Modellaufruf entstehen. Audio-Synthese und Faktencheck dauern entsprechend länger. Beide GitHub-Actions-Jobs besitzen weiterhin ein hartes Timeout von 30 Minuten; die tatsächliche Laufzeit sollte nach mehreren Folgen im neuen Format erneut gemessen werden.
 
-GitHub-Actions-Cron läuft immer in UTC: `45 5` = 5:45 UTC, das entspricht 7:45 Uhr MESZ (Sommerzeit, UTC+2). **Achtung beim Zeitwechsel:** Bei Wechsel auf Winterzeit (MEZ, UTC+1, ab Ende Oktober) muss der Wert um 1 Stunde nach vorne verschoben werden (`45 5` → `45 6`, also 5:45 → 6:45 UTC), sonst verschiebt sich der reale Lauf-Zeitpunkt um eine Stunde - das ist kein automatischer Vorgang, GitHub-Actions-Cron kennt keine Zeitzonen. `1-5` steht für Montag-Freitag. Zum Aktivieren einfach die beiden `#`-Zeilen entfernen und committen - danach läuft `morgenlauf.py` automatisch nach diesem Zeitplan, zusätzlich weiterhin manuell auslösbar. **Wichtig:** `sammellauf.py` muss bis dahin bereits abgeschlossen sein (aktuell nur manuell sicherzustellen, da noch kein eigener Zeitplan existiert) - sonst findet `morgenlauf.py` keine offenen Themen vor (kein Fehler, siehe Abschnitt 11, aber auch keine Episode).
+GitHub-Actions-Cron läuft immer in UTC: `45 4` = 4:45 UTC (Sammellauf) und `45 5` = 5:45 UTC (Morgenlauf), das entspricht 6:45 bzw. 7:45 Uhr MESZ (Sommerzeit, UTC+2) - der Sammellauf liegt also eine Stunde vor dem Morgenlauf und ist mit seinem eigenen 30-Minuten-Timeout komfortabel vorher fertig. **Achtung beim Zeitwechsel:** Bei Wechsel auf Winterzeit (MEZ, UTC+1, ab Ende Oktober) müssen **beide** Werte um 1 Stunde nach vorne verschoben werden (`45 4` → `45 5` und `45 5` → `45 6`), sonst verschiebt sich der reale Lauf-Zeitpunkt um eine Stunde - das ist kein automatischer Vorgang, GitHub-Actions-Cron kennt keine Zeitzonen. `1-5` steht für Montag-Freitag.
 
 ## 11. Fehler-Matrix
 

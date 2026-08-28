@@ -1,10 +1,27 @@
 name: Sammellauf
 
 # Takt 1 der Pipeline (Sammeln & Aufbereiten) - siehe README Abschnitt 2/7.
-# Aktuell NUR manuell ausloesbar (Button "Run workflow" im Actions-Tab).
-# Es gibt bewusst noch KEINEN automatischen Zeitplan fuer diesen Workflow.
+# Laeuft automatisch werktags per Zeitplan (siehe "schedule" unten), eine
+# Stunde vor dem Morgenlauf (Takt 2, siehe morgenlauf.yml), damit dieser
+# garantiert offene Themen vorfindet. Zusaetzlich weiterhin manuell
+# ausloesbar (Button "Run workflow" im Actions-Tab).
 "on":
   workflow_dispatch: {}
+
+  # Zeitplan: Start 06:45 Uhr lokaler Zeit (Sommerzeit/MESZ, UTC+2) =
+  # 04:45 UTC, jeden Wochentag ("1-5" = Montag-Freitag) - eine Stunde vor
+  # dem Morgenlauf (07:45 lokal / 05:45 UTC, siehe morgenlauf.yml), und
+  # damit auch mit dem hier gesetzten 30-Minuten-Timeout komfortabel vor
+  # dessen Start abgeschlossen.
+  #
+  # ACHTUNG: Dieser Wert ist in UTC. Bei Wechsel auf Winterzeit (MEZ, ab
+  # Ende Oktober) muss der Wert um 1 Stunde nach vorne verschoben werden
+  # (04:45 -> 05:45 UTC), sonst verschiebt sich der reale Lauf-Zeitpunkt
+  # um eine Stunde - genau wie beim Morgenlauf (siehe dort und README
+  # Abschnitt 10). Beide Zeitplaene muessen beim Zeitwechsel gemeinsam
+  # angepasst werden, damit der Ein-Stunden-Abstand erhalten bleibt.
+  schedule:
+    - cron: "45 4 * * 1-5"
 
 jobs:
   sammellauf:

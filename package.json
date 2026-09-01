@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --env-file=.env --watch server.mjs",
     "start": "node --env-file=.env server.mjs",
-    "check": "node --check server.mjs && node --check api/episoden.js && node --check public/app.js"
+    "check": "node --check server.mjs && node --check api/episoden.js && node --check api/cron/sammellauf.js && node --check public/app.js"
   },
   "devDependencies": {
     "supabase": "^2.115.0"

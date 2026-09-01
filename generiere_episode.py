@@ -459,6 +459,8 @@ Nutze ausschließlich Zahlen, Namen, Daten und konkrete Tatsachen, die im bereit
 
 LÄNGE UND SENDEDAUER:
 Das Manuskript muss 1.400 bis 1.600 Wörter umfassen. Das entspricht ungefähr zehn Minuten. Nutze die Länge für belegte Details, verständliche Einordnung, Folgen für Unternehmen und konkrete, aus den Quellen ableitbare Handlungsmöglichkeiten – niemals für Wiederholungen oder Füllsätze. Prüfe die Wortzahl vor der Ausgabe selbst. Unter 1.350 Wörtern ist das Manuskript unvollständig.
+
+FAKTENTREUE HAT VORRANG VOR DER WORTZAHL: Ist zu einem Thema nur wenig Quellenmaterial vorhanden, halte genau diesen Themenblock entsprechend kurz (auch nur zwei bis drei Sätze) statt ihn mit erfundenen Zahlen, Beispielen, Begründungen oder Prognosen aufzufüllen. Gleiche das bei der Zielwortzahl aus, indem du die Themen mit ausreichend belegtem Material ausführlicher einordnest - mit mehr Kontext, mehr Folgen für Unternehmen, mehr konkreten Handlungsschritten, alles weiterhin ausschließlich aus dem bereitgestellten Material. Ein kürzeres, aber vollständig belegtes Manuskript ist immer einem längeren mit erfundenen Details vorzuziehen.
 """
     prompt += (
         "\n\nVERBINDLICHE VERABSCHIEDUNG:\n"
@@ -515,12 +517,18 @@ def erstelle_manuskript(
                 f"Der folgende Entwurf hat nur {bisherige_wortzahl} Wörter. Überarbeite genau diesen "
                 f"Entwurf zu einem vollständigen Manuskript mit {MANUSKRIPT_ZIEL_MIN_WOERTER} bis "
                 f"{MANUSKRIPT_ZIEL_MAX_WOERTER} Wörtern. Gib anschließend das gesamte überarbeitete "
-                f"Manuskript aus, nicht nur Ergänzungen. Füge netto mindestens {mindestens_fehlende_woerter} "
-                "inhaltlich neue Wörter hinzu. Kürze dabei keine bereits vorhandene sachliche Passage. "
-                "Erweitere ausschließlich die journalistische "
+                f"Manuskript aus, nicht nur Ergänzungen. Füge nach Möglichkeit netto etwa "
+                f"{mindestens_fehlende_woerter} inhaltlich neue Wörter hinzu - aber NUR, soweit dafür "
+                "tatsächlich zusätzliches belegtes Material aus den oben bereitgestellten Themen "
+                "vorhanden ist. Kürze dabei keine bereits vorhandene sachliche Passage. Erweitere "
+                "ausschließlich die journalistische "
                 "Substanz: zusätzliche belegte Details aus den oben bereitgestellten Themen, Hintergrund, "
                 "Zusammenhänge, Folgen für Unternehmen und konkrete Handlungsmöglichkeiten. Verwende "
-                "kein zusätzliches Storytelling, keine erfundenen Inhalte und keine Wiederholungen. "
+                "kein zusätzliches Storytelling, keine erfundenen Inhalte und keine Wiederholungen. Ist "
+                "das bereitgestellte Material für die Zielwortzahl schlicht zu dünn, gib lieber ein "
+                "Manuskript aus, das die Wortzahl unterschreitet, als die fehlenden Wörter mit "
+                "erfundenen Details, Beispielen, Begründungen oder Prognosen zu füllen - Faktentreue "
+                "hat in jedem Fall Vorrang. "
                 "Erhalte am Ende die Zeile VERWENDETE_THEMEN_IDS.\n\n"
                 "BISHERIGER ENTWURF:\n"
                 f"{antwort}\n"
